@@ -58,7 +58,182 @@ def sanitize_json_text(text: str) -> str:
     t = re.sub(r",\s*(?=[}\]])", "", t)
     return t
 
+def _json_tokenize(s: str):
+    """
+    Minimaler Tokenizer für JSON-ähnlichen Text:
+    liefert (typ, lexem) für: { } [ ] : , STRING NUMBER TRUE FALSE NULL WHITESPACE OTHER
+    STRING achtet auf escapes, NUMBER ist vereinfacht (das reicht hier).
+    """
+    i, n = 0, len(s)
+    WHITESPACE = " \t\r\n"
+    digits = "0123456789-+."
+    while i < n:
+        ch = s[i]
+        if ch in WHITESPACE:
+            j = i+1
+            while j < n and s[j] in WHITESPACE: j += 1
+            yield ("WS", s[i:j]); i = j; continue
+        if ch in "{}[]:,":
+            yield (ch, ch); i += 1; continue
+        if ch == '"' or ch == "'":  # toleranter: auch '…' -> wird später normalisiert
+            quote = ch
+            j, esc = i+1, False
+            while j < n:
+                c = s[j]
+                if esc:
+                    esc = False
+                elif c == '\\':
+                    esc = True
+                elif c == quote:
+                    j += 1
+                    break
+                j += 1
+            yield ("STRING", s[i:j]); i = j; continue
+        # Literale true/false/null
+        if s.startswith("true", i):   yield ("TRUE", "true");   i += 4; continue
+        if s.startswith("false", i):  yield ("FALSE", "false"); i += 5; continue
+        if s.startswith("null", i):   yield ("NULL", "null");   i += 4; continue
+        # Zahl grob erkennen
+        if ch in digits:
+            j = i+1
+            while j < n and s[j] in digits+'eE': j += 1
+            yield ("NUMBER", s[i:j]); i = j; continue
+        # Fallback: einzelnes Zeichen
+        yield ("OTHER", ch); i += 1
+
+
+def _auto_insert_commas(raw: str) -> str:
+    """
+    Heuristik: Fügt fehlende Kommata zwischen JSON-Elementen ein.
+    Funktionsweise:
+    - trackt Stack von Containern (OBJECT/ARRAY)
+    - wenn innerhalb OBJECT zwischen 'value' und folgendem 'key' (STRING gefolgt von :) kein Komma steht -> Komma einfügen
+    - wenn innerhalb ARRAY zwischen zwei 'value' kein Komma steht -> Komma einfügen
+    """
+    tokens = list(_json_tokenize(raw))
+    out = []
+    stack = []  # "OBJECT" oder "ARRAY"
+    # Was ist ein "Wert"-Token?
+    VALUE_TYPES = {"STRING", "NUMBER", "TRUE", "FALSE", "NULL", "}", "]"}
+    i = 0
+    while i < len(tokens):
+        t, lex = tokens[i]
+
+        # Öffnende/Schließende Strukturen tracken
+        if t == "{":
+            stack.append("OBJECT")
+            out.append(lex)
+            i += 1
+            continue
+        if t == "[":
+            stack.append("ARRAY")
+            out.append(lex)
+            i += 1
+            continue
+        if t == "}":
+            if stack and stack[-1] == "OBJECT":
+                stack.pop()
+            out.append(lex); i += 1; continue
+        if t == "]":
+            if stack and stack[-1] == "ARRAY":
+                stack.pop()
+            out.append(lex); i += 1; continue
+
+        # Heuristik nur innerhalb eines Containers
+        if stack:
+            ctx = stack[-1]
+
+            # OBJECT-Fall:  value (STRING/NUMBER/… oder } ]) gefolgt von STRING ":"  -> Komma dazwischen, falls fehlt
+            if ctx == "OBJECT":
+                # Schaue Lookahead: ... value  [WS]  STRING  [WS]  ':'
+                if t in VALUE_TYPES:
+                    # schreibe aktuellen token
+                    out.append(lex)
+                    j = i + 1
+                    # überspringe Whitespace
+                    while j < len(tokens) and tokens[j][0] == "WS": 
+                        out.append(tokens[j][1]); j += 1
+                    # wenn jetzt ein STRING kommt UND danach (über WS hinweg) ein ':'
+                    if j < len(tokens) and tokens[j][0] == "STRING":
+                        # sehe noch eins weiter
+                        jj = j + 1
+                        buf_ws = []
+                        while jj < len(tokens) and tokens[jj][0] == "WS":
+                            buf_ws.append(tokens[jj][1]); jj += 1
+                        if jj < len(tokens) and tokens[jj][0] == ":":
+                            # Wenn vorher KEIN Komma stand, füge Komma ein
+                            # (Wir sind ja im Zweig „nach value“, d.h. es fehlt hier eines)
+                            out.append(",")
+                        # füge die WS (falls vorhanden) wieder ein und verlasse Entscheidung, der Rest wird normal geschrieben
+                    i = j
+                    continue
+
+            # ARRAY-Fall: value gefolgt von value -> Komma dazwischen
+            if ctx == "ARRAY":
+                if t in VALUE_TYPES:
+                    out.append(lex)
+                    j = i + 1
+                    # überspringe Whitespace
+                    while j < len(tokens) and tokens[j][0] == "WS":
+                        out.append(tokens[j][1]); j += 1
+                    if j < len(tokens) and tokens[j][0] in VALUE_TYPES.union({"{" , "["}):
+                        # zwischen zwei Werten fehlt Komma -> einfügen
+                        out.append(",")
+                    i = j
+                    continue
+
+        # default: einfach weiterreichen
+        out.append(lex)
+        i += 1
+
+    return "".join(out)
+
+
 def parse_json_loose(text: str):
+    """
+    Robuster Fallback-Parser für Modellantworten.
+    Reihenfolge:
+      1) sanitize -> json.loads
+      2) größte balancierte Teilstruktur -> json.loads
+      3) sanitize (Zeilen-Kommas weg) -> json.loads
+      4) **auto comma insert** -> json.loads
+    """
+    import json as _json, re as _re
+    text = sanitize_json_text(text)
+
+    # 1) Direkt
+    try:
+        return _json.loads(text)
+    except _json.JSONDecodeError:
+        pass
+
+    # 2) Größte balancierte JSON-Teilstruktur
+    candidates = []
+    for opener, closer in [("{", "}"), ("[", "]")]:
+        stack = []
+        for i, ch in enumerate(text):
+            if ch == opener:
+                stack.append(i)
+            elif ch == closer and stack:
+                start = stack.pop()
+                candidates.append(text[start:i+1])
+    for cand in sorted(candidates, key=len, reverse=True):
+        try:
+            return _json.loads(cand)
+        except _json.JSONDecodeError:
+            continue
+
+    # 3) Zeilen-Kommas killen (selten nötig)
+    cleaned = _re.sub(r",\s*\n", "\n", text)
+    try:
+        return _json.loads(cleaned)
+    except _json.JSONDecodeError:
+        pass
+
+    # 4) **Fehlende Kommata automatisch ergänzen**
+    repaired = _auto_insert_commas(text)
+    return _json.loads(repaired)
+
     """
     Robuster Fallback-Parser für Modellantworten,
     falls Tool-Call/response_format doch mal Text liefern.
