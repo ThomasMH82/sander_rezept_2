@@ -21,7 +21,7 @@ from rezept_datenbank import RezeptDatenbank
 # ============================================================
 VERSION = "1.3.2"
 VERSION_DATUM = "27.10.2025 14:45"
-SCHWELLWERT_AUFTEILUNG = 42  # Ab wie vielen Menüs automatisch aufteilen
+SCHWELLWERT_AUFTEILUNG = 10  # Ab wie vielen Menüs automatisch aufteilen
 # ============================================================
 
 # ============== KOSTEN-TRACKING (OPTIONAL) ==============
