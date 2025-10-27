@@ -1,894 +1,1549 @@
 """
-Hauptanwendung für den Speiseplan-Generator
-Neu designte, robuste Version: tageweise Plan-Erzeugung, 2-Tage Rezept-Gruppen,
-Coverage-Check, Tool-Call-Erzwingung, Sanitizer, Auto-Comma-Fixer, Schema-Validator.
+Professioneller Speiseplan-Generator für Gemeinschaftsverpflegung
+================================================================
+Optimierte Version mit verbesserter Struktur und Fehlerbehandlung
 
-Version: 2.0.1 - FIXED
+Version: 3.0.0 - Professional Edition
 Datum: 27.10.2025
+Author: Diätisch ausgebildeter Küchenmeister-KI-Assistent
 """
 
 import streamlit as st
 import requests
 import json
 import re
-from typing import List, Dict, Any, Tuple, Optional
+import logging
+from typing import List, Dict, Any, Tuple, Optional, Union
+from dataclasses import dataclass, field
+from datetime import datetime
+from enum import Enum
+import time
+from functools import wraps
 
-# ===================== JSON/Parsing-Utilities =====================
+# ===================== KONFIGURATION =====================
 
-SMART_QUOTES = {
-    """: '"', """: '"', "„": '"',
-    "'": "'", "‚": "'",
-}
+# Version und Metadaten
+VERSION = "3.0.0"
+VERSION_DATUM = "27.10.2025"
+BUILD_TYPE = "Professional"
 
-def _strip_js_comments(s: str) -> str:
-    out, i, n, in_str, esc = [], 0, len(s), False, False
-    while i < n:
-        ch = s[i]
-        if in_str:
-            out.append(ch)
-            if esc:
-                esc = False
-            elif ch == '\\':
-                esc = True
-            elif ch in ('"', "'"):
-                in_str = False
-            i += 1
-            continue
-        if ch in ('"', "'"):
-            in_str = True
-            out.append(ch); i += 1; continue
-        if ch == '/' and i+1 < n and s[i+1] == '/':
-            i += 2
-            while i < n and s[i] not in '\r\n':
-                i += 1
-            continue
-        if ch == '/' and i+1 < n and s[i+1] == '*':
-            i += 2
-            while i+1 < n and not (s[i] == '*' and s[i+1] == '/'):
-                i += 1
-            i += 2
-            continue
-        out.append(ch); i += 1
-    return ''.join(out)
+# API-Konfiguration
+API_BASE_URL = "https://api.anthropic.com/v1/messages"
+API_VERSION = "2023-06-01"
+DEFAULT_MODEL = "claude-sonnet-4-20250514"
+API_TIMEOUT = 180
+MAX_RETRIES = 3
+RETRY_DELAY = 2
 
-def sanitize_json_text(text: str) -> str:
-    t = re.sub(r"```(?:json)?\s*", "", text, flags=re.IGNORECASE).replace("```", "").strip()
-    for k, v in SMART_QUOTES.items():
-        t = t.replace(k, v)
-    t = _strip_js_comments(t)
-    t = re.sub(r",\s*(?=[}\]])", "", t)
-    return t
+# Planungs-Parameter
+SCHWELLWERT_AUFTEILUNG = 8
+TAGE_PRO_GRUPPE = 2
+MAX_WOCHEN = 4
+MAX_MENULINIEN = 5
+MIN_BEILAGEN = 2
+MAX_TOKENS_SPEISEPLAN = 16000
+MAX_TOKENS_REZEPTE = 10000
+MAX_TOKENS_TAG = 6000
 
-def _json_tokenize(s: str):
-    i, n = 0, len(s)
-    WS = " \t\r\n"
-    digits = "0123456789-+."
-    while i < n:
-        ch = s[i]
-        if ch in WS:
-            j = i+1
-            while j < n and s[j] in WS: j += 1
-            yield ("WS", s[i:j]); i = j; continue
-        if ch in "{}[]:,":
-            yield (ch, ch); i += 1; continue
-        if ch == '"' or ch == "'":
-            quote = ch
-            j, esc = i+1, False
-            while j < n:
-                c = s[j]
-                if esc:
-                    esc = False
-                elif c == '\\':
-                    esc = True
-                elif c == quote:
-                    j += 1
-                    break
-                j += 1
-            yield ("STRING", s[i:j]); i = j; continue
-        if s.startswith("true", i):   yield ("TRUE", "true");   i += 4; continue
-        if s.startswith("false", i):  yield ("FALSE", "false"); i += 5; continue
-        if s.startswith("null", i):   yield ("NULL", "null");   i += 4; continue
-        if ch in digits:
-            j = i+1
-            while j < n and s[j] in digits+'eE': j += 1
-            yield ("NUMBER", s[i:j]); i = j; continue
-        yield ("OTHER", ch); i += 1
+# UI-Konfiguration
+PAGE_TITLE = "Speiseplan-Generator Professional"
+PAGE_ICON = "👨‍🍳"
+LAYOUT = "wide"
 
-def _auto_insert_commas(raw: str) -> str:
-    tokens = list(_json_tokenize(raw))
-    out, stack = [], []
-    VALUE_TYPES = {"STRING", "NUMBER", "TRUE", "FALSE", "NULL", "}", "]"}
-    i = 0
-    while i < len(tokens):
-        t, lex = tokens[i]
-        if t == "{":
-            stack.append("OBJECT"); out.append(lex); i += 1; continue
-        if t == "[":
-            stack.append("ARRAY"); out.append(lex); i += 1; continue
-        if t == "}":
-            if stack and stack[-1] == "OBJECT": stack.pop()
-            out.append(lex); i += 1; continue
-        if t == "]":
-            if stack and stack[-1] == "ARRAY": stack.pop()
-            out.append(lex); i += 1; continue
+# ===================== LOGGING SETUP =====================
 
-        if stack:
-            ctx = stack[-1]
-            if ctx == "OBJECT":
-                if t in VALUE_TYPES:
-                    out.append(lex)
-                    j = i + 1
-                    while j < len(tokens) and tokens[j][0] == "WS":
-                        out.append(tokens[j][1]); j += 1
-                    if j < len(tokens) and tokens[j][0] == "STRING":
-                        jj = j + 1
-                        buf_ws = []
-                        while jj < len(tokens) and tokens[jj][0] == "WS":
-                            buf_ws.append(tokens[jj][1]); jj += 1
-                        if jj < len(tokens) and tokens[jj][0] == ":":
-                            out.append(",")
-                    i = j
-                    continue
-            if ctx == "ARRAY":
-                if t in VALUE_TYPES:
-                    out.append(lex)
-                    j = i + 1
-                    while j < len(tokens) and tokens[j][0] == "WS":
-                        out.append(tokens[j][1]); j += 1
-                    if j < len(tokens) and (tokens[j][0] in VALUE_TYPES or tokens[j][0] in {"{","["}):
-                        out.append(",")
-                    i = j
-                    continue
-        out.append(lex); i += 1
-    return "".join(out)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-def parse_json_loose(text: str):
-    import json as _json, re as _re
-    text = sanitize_json_text(text)
-    try:
-        return _json.loads(text)
-    except _json.JSONDecodeError:
-        pass
+# ===================== ENUMS UND DATENKLASSEN =====================
 
-    candidates = []
-    for opener, closer in [("{", "}"), ("[", "]")]:
-        stack = []
-        for i, ch in enumerate(text):
-            if ch == opener:
-                stack.append(i)
-            elif ch == closer and stack:
-                start = stack.pop()
-                candidates.append(text[start:i+1])
-    for cand in sorted(candidates, key=len, reverse=True):
+class MenuTyp(Enum):
+    """Menülinien-Typen für die Gemeinschaftsverpflegung"""
+    VOLLKOST = "Vollkost"
+    VEGETARISCH = "Vegetarisch"
+    SCHONKOST = "Schonkost"
+    DIABETIKER = "Diabetiker"
+    PUERIERKOST = "Pürierkost"
+    VEGAN = "Vegan"
+    GLUTENFREI = "Glutenfrei"
+    LAKTOSEFREI = "Laktosefrei"
+
+@dataclass
+class APIConfig:
+    """API-Konfigurationsobjekt"""
+    api_key: str
+    model: str = DEFAULT_MODEL
+    max_retries: int = MAX_RETRIES
+    timeout: int = API_TIMEOUT
+    
+    def __post_init__(self):
+        if not self.api_key:
+            raise ValueError("API-Key ist erforderlich")
+
+@dataclass
+class PlanConfig:
+    """Speiseplan-Konfiguration"""
+    wochen: int
+    menulinien: int
+    menu_namen: List[str]
+    
+    def __post_init__(self):
+        # Validierung
+        if not 1 <= self.wochen <= MAX_WOCHEN:
+            raise ValueError(f"Wochen muss zwischen 1 und {MAX_WOCHEN} liegen")
+        if not 1 <= self.menulinien <= MAX_MENULINIEN:
+            raise ValueError(f"Menülinien muss zwischen 1 und {MAX_MENULINIEN} liegen")
+        if len(self.menu_namen) != self.menulinien:
+            raise ValueError("Anzahl der Menünamen muss mit Anzahl Menülinien übereinstimmen")
+
+# ===================== DEKORATOREN =====================
+
+def retry_on_error(max_retries: int = MAX_RETRIES, delay: float = RETRY_DELAY):
+    """Decorator für automatische Wiederholung bei Fehlern"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exception = e
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Versuch {attempt + 1} fehlgeschlagen: {e}")
+                        time.sleep(delay * (attempt + 1))
+                    else:
+                        logger.error(f"Alle Versuche fehlgeschlagen: {e}")
+            raise last_exception
+        return wrapper
+    return decorator
+
+def measure_time(func):
+    """Decorator zur Zeitmessung"""
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        start = time.time()
+        result = func(*args, **kwargs)
+        end = time.time()
+        logger.info(f"{func.__name__} dauerte {end - start:.2f} Sekunden")
+        return result
+    return wrapper
+
+# ===================== JSON-VERARBEITUNG =====================
+
+class JSONProcessor:
+    """Robuste JSON-Verarbeitung mit mehreren Fallback-Strategien"""
+    
+    # Smart Quotes Mapping
+    SMART_QUOTES = {
+        """: '"', """: '"', "„": '"',
+        "'": "'", "‚": "'", "'": "'",
+        "–": "-", "—": "-"
+    }
+    
+    @classmethod
+    def sanitize_text(cls, text: str) -> str:
+        """Bereinigt Text für JSON-Parsing"""
+        if not text:
+            return ""
+            
+        # Entferne Markdown-Code-Blöcke
+        text = re.sub(r"```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = text.replace("```", "").strip()
+        
+        # Ersetze Smart Quotes
+        for old, new in cls.SMART_QUOTES.items():
+            text = text.replace(old, new)
+        
+        # Entferne Kommentare
+        text = cls._remove_comments(text)
+        
+        # Entferne trailing commas
+        text = re.sub(r",\s*(?=[}\]])", "", text)
+        
+        # Normalisiere Whitespace
+        text = re.sub(r"\s+", " ", text)
+        
+        return text.strip()
+    
+    @staticmethod
+    def _remove_comments(text: str) -> str:
+        """Entfernt JavaScript-style Kommentare aus Text"""
+        # Einzeilige Kommentare
+        text = re.sub(r"//.*?$", "", text, flags=re.MULTILINE)
+        # Mehrzeilige Kommentare
+        text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+        return text
+    
+    @classmethod
+    def parse_json_safe(cls, text: str) -> Optional[Dict]:
+        """
+        Versucht JSON mit mehreren Strategien zu parsen
+        
+        Returns:
+            Geparster JSON oder None bei Fehler
+        """
+        if not text:
+            return None
+            
+        # Strategie 1: Direktes Parsing
         try:
-            return _json.loads(cand)
-        except _json.JSONDecodeError:
-            continue
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategie 2: Nach Bereinigung
+        cleaned = cls.sanitize_text(text)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            pass
+        
+        # Strategie 3: Extrahiere größtes JSON-Objekt
+        extracted = cls._extract_json_object(cleaned)
+        if extracted:
+            try:
+                return json.loads(extracted)
+            except json.JSONDecodeError:
+                pass
+        
+        # Strategie 4: Repariere fehlende Kommata
+        repaired = cls._auto_fix_commas(cleaned)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON-Parsing endgültig fehlgeschlagen: {e}")
+            return None
+    
+    @staticmethod
+    def _extract_json_object(text: str) -> Optional[str]:
+        """Extrahiert das größte JSON-Objekt aus Text"""
+        stack = []
+        start_idx = None
+        
+        for i, char in enumerate(text):
+            if char in '{[':
+                if not stack:
+                    start_idx = i
+                stack.append(char)
+            elif char in '}]':
+                if stack:
+                    opener = stack.pop()
+                    expected = '{' if char == '}' else '['
+                    if opener == expected and not stack and start_idx is not None:
+                        return text[start_idx:i+1]
+        
+        return None
+    
+    @staticmethod
+    def _auto_fix_commas(text: str) -> str:
+        """Versucht fehlende Kommata automatisch zu ergänzen"""
+        # Füge Kommata zwischen aufeinanderfolgenden JSON-Werten ein
+        patterns = [
+            (r'("\w+":\s*"[^"]*")\s+(")', r'\1, \2'),
+            (r'("\w+":\s*\d+)\s+(")', r'\1, \2'),
+            (r'("\w+":\s*true)\s+(")', r'\1, \2'),
+            (r'("\w+":\s*false)\s+(")', r'\1, \2'),
+            (r'("\w+":\s*null)\s+(")', r'\1, \2'),
+            (r'(})\s+(")', r'\1, \2'),
+            (r'(])\s+(")', r'\1, \2'),
+        ]
+        
+        for pattern, replacement in patterns:
+            text = re.sub(pattern, replacement, text)
+        
+        return text
 
-    cleaned = _re.sub(r",\s*\n", "\n", text)
-    try:
-        return _json.loads(cleaned)
-    except _json.JSONDecodeError:
-        pass
+# ===================== WOCHENTAGE =====================
 
-    repaired = _auto_insert_commas(text)
-    return _json.loads(repaired)
+WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
 
-def _waehle_root(parsed):
-    if isinstance(parsed, dict):
-        if "speiseplan" in parsed or "rezepte" in parsed or "tag" in parsed:
-            return parsed
-        for k in ("data", "result", "output"):
-            v = parsed.get(k)
-            if isinstance(v, dict) and (("speiseplan" in v) or ("rezepte" in v) or ("tag" in v)):
-                return v
-    return parsed
+# ===================== VALIDIERUNG =====================
 
-def _extract_tool_input_from_anthropic(data):
-    try:
+class PlanValidator:
+    """Validierung von Speiseplan-Strukturen"""
+    
+    @staticmethod
+    def validate_day_structure(day: Dict[str, Any], menulinien: int) -> List[str]:
+        """
+        Validiert die Struktur eines Tages
+        
+        Returns:
+            Liste von Fehlermeldungen (leer wenn valide)
+        """
+        errors = []
+        
+        if not isinstance(day, dict):
+            return ["Tag-Struktur ist kein Dictionary"]
+        
+        # Prüfe Tag-Name
+        if "tag" not in day:
+            errors.append("Feld 'tag' fehlt")
+        elif day["tag"] not in WOCHENTAGE:
+            errors.append(f"Ungültiger Tag: {day.get('tag')}")
+        
+        # Prüfe Menüs
+        if "menues" not in day:
+            errors.append("Feld 'menues' fehlt")
+            return errors
+        
+        if not isinstance(day["menues"], list):
+            errors.append("'menues' ist keine Liste")
+            return errors
+        
+        if len(day["menues"]) != menulinien:
+            errors.append(f"Anzahl Menüs ({len(day['menues'])}) != {menulinien}")
+        
+        # Validiere jedes Menü
+        for idx, menu in enumerate(day["menues"], 1):
+            menu_errors = PlanValidator._validate_menu_structure(menu, idx)
+            errors.extend(menu_errors)
+        
+        return errors
+    
+    @staticmethod
+    def _validate_menu_structure(menu: Dict[str, Any], idx: int) -> List[str]:
+        """Validiert die Struktur eines einzelnen Menüs"""
+        errors = []
+        
+        if not isinstance(menu, dict):
+            return [f"Menü {idx}: ist kein Dictionary"]
+        
+        # Pflichtfelder
+        required_fields = ["menuName", "fruehstueck", "mittagessen", "abendessen"]
+        for field in required_fields:
+            if field not in menu:
+                errors.append(f"Menü {idx}: Feld '{field}' fehlt")
+        
+        # Validiere Mittagessen im Detail
+        if "mittagessen" in menu:
+            mittag = menu["mittagessen"]
+            if not isinstance(mittag, dict):
+                errors.append(f"Menü {idx}: 'mittagessen' ist kein Dictionary")
+            else:
+                # Pflichtfelder für Mittagessen
+                mittag_required = ["hauptgericht", "beilagen"]
+                for field in mittag_required:
+                    if field not in mittag:
+                        errors.append(f"Menü {idx} Mittagessen: '{field}' fehlt")
+                
+                # Validiere Beilagen
+                if "beilagen" in mittag:
+                    if not isinstance(mittag["beilagen"], list):
+                        errors.append(f"Menü {idx}: 'beilagen' ist keine Liste")
+                    elif len(mittag["beilagen"]) < MIN_BEILAGEN:
+                        errors.append(f"Menü {idx}: Zu wenige Beilagen ({len(mittag['beilagen'])} < {MIN_BEILAGEN})")
+                
+                # Validiere Nährwerte
+                if "naehrwerte" in mittag and isinstance(mittag["naehrwerte"], dict):
+                    nw = mittag["naehrwerte"]
+                    if "kalorien" not in nw or "protein" not in nw:
+                        errors.append(f"Menü {idx}: Unvollständige Nährwerte")
+        
+        return errors
+    
+    @staticmethod
+    def validate_week_structure(week: Dict[str, Any], menulinien: int) -> List[str]:
+        """Validiert die Struktur einer Woche"""
+        errors = []
+        
+        if not isinstance(week, dict):
+            return ["Wochen-Struktur ist kein Dictionary"]
+        
+        if "woche" not in week:
+            errors.append("Feld 'woche' fehlt")
+        
+        if "tage" not in week:
+            errors.append("Feld 'tage' fehlt")
+            return errors
+        
+        if not isinstance(week["tage"], list):
+            errors.append("'tage' ist keine Liste")
+            return errors
+        
+        if len(week["tage"]) != 7:
+            errors.append(f"Woche hat {len(week['tage'])} Tage statt 7")
+        
+        # Validiere jeden Tag
+        for tag in week["tage"]:
+            day_errors = PlanValidator.validate_day_structure(tag, menulinien)
+            errors.extend(day_errors)
+        
+        return errors
+
+# ===================== ANTHROPIC API CLIENT =====================
+
+class AnthropicClient:
+    """Verbesserter Anthropic API Client mit Fehlerbehandlung"""
+    
+    def __init__(self, config: APIConfig):
+        self.config = config
+        self.session = requests.Session()
+        self.session.headers.update({
+            "Content-Type": "application/json",
+            "x-api-key": config.api_key,
+            "anthropic-version": API_VERSION
+        })
+    
+    @retry_on_error(max_retries=3)
+    def call_api(
+        self,
+        prompt: str,
+        max_tokens: int = MAX_TOKENS_SPEISEPLAN,
+        use_tool_call: bool = True
+    ) -> Tuple[Optional[Dict], Optional[str], Optional[Dict]]:
+        """
+        Ruft die Anthropic API auf
+        
+        Returns:
+            Tuple von (parsed_response, error_message, usage_info)
+        """
+        payload = self._build_payload(prompt, max_tokens, use_tool_call)
+        
+        try:
+            response = self.session.post(
+                API_BASE_URL,
+                json=payload,
+                timeout=self.config.timeout
+            )
+            
+            if response.status_code != 200:
+                error_msg = self._extract_error_message(response)
+                logger.error(f"API-Fehler: {error_msg}")
+                return None, error_msg, None
+            
+            data = response.json()
+            parsed = self._extract_response(data)
+            usage = data.get("usage", {})
+            
+            if parsed is None:
+                return None, "Konnte Antwort nicht parsen", usage
+            
+            return parsed, None, usage
+            
+        except requests.exceptions.Timeout:
+            error_msg = "API-Timeout: Anfrage dauerte zu lange"
+            logger.error(error_msg)
+            return None, error_msg, None
+            
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Netzwerkfehler: {str(e)}"
+            logger.error(error_msg)
+            return None, error_msg, None
+            
+        except Exception as e:
+            error_msg = f"Unerwarteter Fehler: {str(e)}"
+            logger.error(error_msg)
+            return None, error_msg, None
+    
+    def _build_payload(
+        self,
+        prompt: str,
+        max_tokens: int,
+        use_tool_call: bool
+    ) -> Dict[str, Any]:
+        """Erstellt das API-Payload"""
+        
+        base_payload = {
+            "model": self.config.model,
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "top_p": 0.1,
+            "messages": [{"role": "user", "content": prompt}]
+        }
+        
+        if use_tool_call:
+            base_payload["tools"] = [{
+                "name": "return_json",
+                "description": "Rückgabe des Ergebnisses als strukturiertes JSON",
+                "input_schema": {"type": "object"}
+            }]
+            base_payload["tool_choice"] = {"type": "tool", "name": "return_json"}
+            base_payload["system"] = (
+                "Du bist ein diätisch ausgebildeter Küchenmeister mit 25 Jahren Erfahrung. "
+                "Gib dein Ergebnis AUSSCHLIESSLICH als Tool-Aufruf 'return_json' zurück. "
+                "Keine Erklärungen, kein Markdown, nur strukturiertes JSON im Tool-Call."
+            )
+        
+        return base_payload
+    
+    def _extract_response(self, data: Dict[str, Any]) -> Optional[Dict]:
+        """Extrahiert die Antwort aus der API-Response"""
+        
+        # Versuche Tool-Call zu extrahieren
         content = data.get("content", [])
         for item in content:
             if isinstance(item, dict) and item.get("type") == "tool_use":
-                return item.get("input")
-    except Exception:
-        pass
-    return None
+                tool_input = item.get("input")
+                if tool_input:
+                    return self._normalize_response(tool_input)
+        
+        # Fallback: Text-Response parsen
+        if content and isinstance(content[0], dict):
+            text = content[0].get("text", "")
+            if text:
+                parsed = JSONProcessor.parse_json_safe(text)
+                if parsed:
+                    return self._normalize_response(parsed)
+        
+        return None
+    
+    def _normalize_response(self, data: Any) -> Optional[Dict]:
+        """Normalisiert die Response-Struktur"""
+        if not isinstance(data, dict):
+            return None
+        
+        # Prüfe auf erwartete Strukturen
+        if any(key in data for key in ["speiseplan", "rezepte", "tag", "pruefung"]):
+            return data
+        
+        # Prüfe verschachtelte Strukturen
+        for key in ["data", "result", "output"]:
+            if key in data and isinstance(data[key], dict):
+                nested = data[key]
+                if any(k in nested for k in ["speiseplan", "rezepte", "tag"]):
+                    return nested
+        
+        return data
+    
+    def _extract_error_message(self, response: requests.Response) -> str:
+        """Extrahiert Fehlermeldung aus Response"""
+        try:
+            error_data = response.json()
+            if "error" in error_data:
+                return error_data["error"].get("message", str(error_data["error"]))
+            return response.text
+        except:
+            return f"Status {response.status_code}: {response.text[:200]}"
 
-# ===================== Coverage/Schema-Utilities =====================
+# ===================== PROMPT GENERATOR =====================
 
-TAGE = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"]
+class PromptGenerator:
+    """Generiert optimierte Prompts für verschiedene Aufgaben"""
+    
+    @staticmethod
+    def create_day_prompt(tag: str, config: PlanConfig) -> str:
+        """Erstellt Prompt für einen einzelnen Tag"""
+        
+        menu_list = "\n".join([
+            f"  {i+1}. {name}"
+            for i, name in enumerate(config.menu_namen)
+        ])
+        
+        return f"""Du bist ein diätisch ausgebildeter Küchenmeister mit 25 Jahren Erfahrung in der Gemeinschaftsverpflegung.
 
-def _tage_slicen(tage_liste: List[Dict[str, Any]], start: int, ende: int):
-    return tage_liste[start:ende]
+AUFGABE: Erstelle einen professionellen Speiseplan für {tag} mit {config.menulinien} Menülinie(n).
 
-def _erwarte_rezept_keys(sp_plan: Dict[str, Any]) -> List[Tuple[int,str,str,str]]:
-    expect = []
-    for w in sp_plan['speiseplan']['wochen']:
-        wnr = int(w.get('woche', 1))
-        for t in w.get('tage', []):
-            tag = str(t.get('tag', ''))
-            for m in t.get('menues', []):
-                hg = m.get('mittagessen', {}).get('hauptgericht', '')
-                expect.append((wnr, tag, str(m.get('menuName','')), str(hg)))
-    return expect
+MENÜLINIEN:
+{menu_list}
 
-def _vorhandene_rezepte_keys(rezepte: Dict[str, Any]) -> List[Tuple[int,str,str,str]]:
-    have = []
-    if not rezepte or 'rezepte' not in rezepte: return have
-    for r in rezepte['rezepte']:
-        have.append((
-            int(r.get('woche', 0) or 0),
-            str(r.get('tag','')),
-            str(r.get('menu','')),
-            str(r.get('name',''))
-        ))
-    return have
+QUALITÄTSKRITERIEN:
+✓ Seniorengerechte Zubereitung (leicht kaubar, gut verdaulich)
+✓ Ausgewogene Ernährung nach DGE-Standards
+✓ Saisonale und regionale Zutaten bevorzugen
+✓ Abwechslungsreich und appetitlich
+✓ Berücksichtigung häufiger Unverträglichkeiten
 
-def _name_to_hg(name: str) -> str:
-    if not name: return name
-    import re
-    parts = re.split(r"\s+mit\s+| - | – ", name, maxsplit=1)
-    return parts[0].strip()
+STRUKTUR PRO MENÜLINIE:
+• Frühstück: Hauptkomponente + Beilagen + Getränk
+• Mittagessen: Vorspeise + Hauptgericht + 2-3 Beilagen + Nachspeise + Nährwerte + Allergene
+• Zwischenmahlzeit: Kleine Stärkung am Nachmittag
+• Abendessen: Hauptkomponente + Beilagen + Getränk
 
-def _delta_missing(expected: List[Tuple[int,str,str,str]], rezepte: Dict[str, Any]):
-    have_index = set()
-    for (w,t,menu,name) in _vorhandene_rezepte_keys(rezepte):
-        have_index.add((w,t,menu,_name_to_hg(name)))
-    missing = []
-    for (w,t,menu,hg) in expected:
-        if (w,t,menu,hg) not in have_index:
-            missing.append((w,t,menu,hg))
-    return missing
-
-def _mini_plan_from_keys(full_plan: Dict[str,Any], keys: List[Tuple[int,str,str,str]]):
-    from collections import defaultdict
-    by_w = defaultdict(lambda: defaultdict(lambda: {"need": set(), "menus": set()}))
-    for (w,t,menu,hg) in keys:
-        by_w[w][t]["need"].add(hg)
-        by_w[w][t]["menus"].add(menu)
-    out_weeks = []
-    for w in full_plan['speiseplan']['wochen']:
-        wnr = w.get('woche')
-        if wnr not in by_w: continue
-        new_tage = []
-        for t in w.get('tage', []):
-            tag = t.get('tag')
-            if tag not in by_w[wnr]: continue
-            new_menues = []
-            need_hg = by_w[wnr][tag]["need"]
-            need_menus = by_w[wnr][tag]["menus"]
-            for m in t.get('menues', []):
-                hg = m.get('mittagessen', {}).get('hauptgericht')
-                if m.get('menuName') in need_menus and hg in need_hg:
-                    new_menues.append(m)
-            if new_menues:
-                new_tage.append({"tag": tag, "menues": new_menues})
-        if new_tage:
-            out_weeks.append({"woche": wnr, "tage": new_tage})
-    return {"speiseplan": {
-        "wochen": out_weeks,
-        "menuLinien": full_plan['speiseplan'].get('menuLinien'),
-        "menuNamen": full_plan['speiseplan'].get('menuNamen', [])
+ANTWORT-SCHEMA (exakt einhalten):
+{{
+  "tag": "{tag}",
+  "menues": [
+    {{
+      "menuName": "Exakter Name der Menülinie",
+      "fruehstueck": {{
+        "hauptgericht": "Beschreibung",
+        "beilagen": ["Beilage 1", "Beilage 2"],
+        "getraenk": "Getränk"
+      }},
+      "mittagessen": {{
+        "vorspeise": "Beschreibung",
+        "hauptgericht": "Ausführliche Beschreibung",
+        "beilagen": ["Beilage 1", "Beilage 2", "Beilage 3"],
+        "nachspeise": "Beschreibung",
+        "naehrwerte": {{
+          "kalorien": "ca. XXX kcal",
+          "protein": "XX g",
+          "fett": "XX g",
+          "kohlenhydrate": "XX g",
+          "ballaststoffe": "X g"
+        }},
+        "allergene": ["Gluten", "Milch", "Ei", ...]
+      }},
+      "zwischenmahlzeit": "Beschreibung",
+      "abendessen": {{
+        "hauptgericht": "Beschreibung",
+        "beilagen": ["Beilage 1", "Beilage 2"],
+        "getraenk": "Getränk"
+      }}
     }}
+  ]
+}}
 
-# ------------------ Mini-Schema-Validator ------------------
+WICHTIG: Erstelle GENAU {config.menulinien} Menü-Einträge, einen für jede Menülinie."""
+    
+    @staticmethod
+    def create_recipe_prompt(speiseplan: Dict[str, Any], max_recipes: int = 10) -> str:
+        """Erstellt Prompt für Rezepte basierend auf Speiseplan"""
+        
+        # Extrahiere Hauptgerichte für Rezepte
+        gerichte = []
+        for woche in speiseplan.get("speiseplan", {}).get("wochen", []):
+            woche_nr = woche.get("woche", 1)
+            for tag in woche.get("tage", []):
+                tag_name = tag.get("tag", "")
+                for menu in tag.get("menues", []):
+                    menu_name = menu.get("menuName", "")
+                    hauptgericht = menu.get("mittagessen", {}).get("hauptgericht", "")
+                    if hauptgericht:
+                        gerichte.append({
+                            "woche": woche_nr,
+                            "tag": tag_name,
+                            "menu": menu_name,
+                            "gericht": hauptgericht
+                        })
+        
+        # Limitiere Anzahl wenn nötig
+        if len(gerichte) > max_recipes:
+            gerichte = gerichte[:max_recipes]
+        
+        gerichte_text = "\n".join([
+            f"- Woche {g['woche']}, {g['tag']}, {g['menu']}: {g['gericht']}"
+            for g in gerichte
+        ])
+        
+        return f"""Erstelle detaillierte Rezepte für folgende Hauptgerichte aus dem Speiseplan:
 
-def _validate_day_struct(day: Dict[str,Any], menulinien: int) -> List[str]:
-    errs = []
-    if not isinstance(day, dict):
-        return ["Tag-Struktur ist kein Objekt."]
-    if day.get("tag") not in TAGE:
-        errs.append("Feld 'tag' fehlt/ungültig.")
-    if "menues" not in day or not isinstance(day["menues"], list):
-        errs.append("Feld 'menues' fehlt/ist keine Liste.")
-        return errs
-    if len(day["menues"]) != menulinien:
-        errs.append(f"Anzahl 'menues' != {menulinien}.")
-    for idx, m in enumerate(day["menues"], 1):
-        if not isinstance(m, dict):
-            errs.append(f"Menü {idx}: ist kein Objekt."); continue
-        for key in ("menuName","fruehstueck","mittagessen","abendessen"):
-            if key not in m:
-                errs.append(f"Menü {idx}: '{key}' fehlt.")
-        if "mittagessen" in m:
-            mi = m["mittagessen"]
-            for key in ("hauptgericht","beilagen"):
-                if key not in mi:
-                    errs.append(f"Menü {idx} Mittagessen: '{key}' fehlt.")
-            if isinstance(mi.get("beilagen"), list) and len(mi["beilagen"]) < 2:
-                errs.append(f"Menü {idx} Mittagessen: zu wenige Beilagen (<2).")
-    return errs
+{gerichte_text}
 
-def _validate_week_struct(week: Dict[str,Any], menulinien: int) -> List[str]:
-    errs = []
-    if "tage" not in week or not isinstance(week["tage"], list) or len(week["tage"]) != 7:
-        errs.append("Woche hat nicht exakt 7 'tage'.")
-        return errs
-    for t in week["tage"]:
-        errs.extend(_validate_day_struct(t, menulinien))
-    return errs
+ANFORDERUNGEN:
+✓ Professionelle Großküchen-Rezepte (100 Portionen)
+✓ Präzise Mengenangaben in kg/L/Stück
+✓ HACCP-konforme Zubereitungsschritte
+✓ Genaue Zeit- und Temperaturangaben
+✓ Allergen-Kennzeichnung nach LMIV
+✓ Nährwertangaben pro Portion
 
-# ===================== App-Module-Imports =====================
+ANTWORT-SCHEMA:
+{{
+  "rezepte": [
+    {{
+      "name": "Exakter Name des Gerichts",
+      "woche": X,
+      "tag": "Wochentag",
+      "menu": "Menülinie",
+      "portionen": 100,
+      "zeiten": {{
+        "vorbereitung": "XX Minuten",
+        "garzeit": "XX Minuten",
+        "gesamt": "XX Minuten"
+      }},
+      "zutaten": [
+        {{
+          "name": "Zutat",
+          "menge": "X kg/L/Stück",
+          "hinweis": "optional: Verarbeitungshinweis"
+        }}
+      ],
+      "zubereitung": [
+        "Schritt 1: Detaillierte Anweisung mit Temperatur/Zeit",
+        "Schritt 2: ...",
+        "Schritt 3: ..."
+      ],
+      "naehrwerte": {{
+        "kalorien": "XXX kcal",
+        "protein": "XX g",
+        "fett": "XX g",
+        "kohlenhydrate": "XX g",
+        "ballaststoffe": "X g",
+        "salz": "X g"
+      }},
+      "allergene": ["Gluten", "Milch", ...],
+      "tipps": "Professionelle Hinweise für optimale Qualität",
+      "variationen": "Alternative Zubereitungsmöglichkeiten",
+      "haccp": {{
+        "kritische_punkte": ["Erhitzung auf min. 75°C Kerntemperatur"],
+        "lagerung": "Kühlkette einhalten, max. 7°C"
+      }}
+    }}
+  ]
+}}"""
+    
+    @staticmethod
+    def create_validation_prompt(speiseplan: Dict[str, Any]) -> str:
+        """Erstellt Prompt für Qualitätsprüfung"""
+        
+        return f"""Prüfe den folgenden Speiseplan auf Qualität und DGE-Standards:
+
+{json.dumps(speiseplan, ensure_ascii=False, indent=2)}
+
+PRÜFKRITERIEN:
+1. Nährstoffbalance (40 Punkte)
+   - Ausgewogenheit der Makronährstoffe
+   - Vitamine und Mineralstoffe
+   - DGE-Empfehlungen
+
+2. Abwechslung (30 Punkte)
+   - Vielfalt der Gerichte
+   - Keine Wiederholungen
+   - Verschiedene Zubereitungsarten
+
+3. Seniorengerechtheit (30 Punkte)
+   - Leichte Kaubarkeit
+   - Gute Verdaulichkeit
+   - Appetitliche Präsentation
+
+ANTWORT-SCHEMA:
+{{
+  "pruefung": {{
+    "bewertungen": [
+      {{
+        "kategorie": "Nährstoffbalance",
+        "punkte": X,
+        "max_punkte": 40,
+        "kommentar": "Detaillierte Bewertung",
+        "verbesserungen": ["Vorschlag 1", "Vorschlag 2"]
+      }}
+    ],
+    "gesamtpunkte": XX,
+    "max_gesamtpunkte": 100,
+    "note": "Sehr gut/Gut/Befriedigend/Ausreichend",
+    "fazit": "Zusammenfassende Bewertung",
+    "empfehlungen": ["Konkrete Verbesserungsvorschläge"]
+  }}
+}}"""
+
+# ===================== PLAN GENERATOR =====================
+
+class SpeiseplanGenerator:
+    """Hauptklasse für die Speiseplan-Generierung"""
+    
+    def __init__(self, api_client: AnthropicClient):
+        self.api_client = api_client
+        self.prompt_generator = PromptGenerator()
+        self.validator = PlanValidator()
+        self.json_processor = JSONProcessor()
+    
+    @measure_time
+    def generate_complete_plan(
+        self,
+        config: PlanConfig,
+        progress_callback=None
+    ) -> Tuple[Optional[Dict], Optional[Dict], Optional[Dict], Optional[str]]:
+        """
+        Generiert kompletten Speiseplan mit Rezepten und Prüfung
+        
+        Returns:
+            Tuple von (speiseplan, rezepte, pruefung, error_message)
+        """
+        
+        logger.info(f"Starte Generierung: {config.wochen} Wochen, {config.menulinien} Linien")
+        
+        # Entscheide Generierungsstrategie
+        total_days = config.wochen * 7
+        if total_days > 7 or config.menulinien > 3:
+            return self._generate_incremental(config, progress_callback)
+        else:
+            return self._generate_direct(config, progress_callback)
+    
+    def _generate_incremental(
+        self,
+        config: PlanConfig,
+        progress_callback=None
+    ) -> Tuple[Optional[Dict], Optional[Dict], Optional[Dict], Optional[str]]:
+        """Generiert Plan inkrementell (Woche für Woche, Tag für Tag)"""
+        
+        all_weeks = []
+        all_recipes = []
+        
+        for week_num in range(1, config.wochen + 1):
+            if progress_callback:
+                progress_callback(f"Generiere Woche {week_num} von {config.wochen}")
+            
+            # Generiere Woche
+            week_data, error = self._generate_week(config, week_num)
+            if error:
+                return None, None, None, error
+            
+            all_weeks.append(week_data)
+            
+            # Generiere Rezepte für diese Woche
+            week_plan = {
+                "speiseplan": {
+                    "wochen": [week_data],
+                    "menuLinien": config.menulinien,
+                    "menuNamen": config.menu_namen
+                }
+            }
+            
+            recipes, recipe_error = self._generate_recipes(week_plan)
+            if not recipe_error and recipes:
+                all_recipes.extend(recipes.get("rezepte", []))
+        
+        # Kombiniere alles
+        complete_plan = {
+            "speiseplan": {
+                "wochen": all_weeks,
+                "menuLinien": config.menulinien,
+                "menuNamen": config.menu_namen
+            }
+        }
+        
+        complete_recipes = {"rezepte": all_recipes} if all_recipes else None
+        
+        # Qualitätsprüfung
+        validation = self._validate_plan(complete_plan)
+        
+        return complete_plan, complete_recipes, validation, None
+    
+    def _generate_week(
+        self,
+        config: PlanConfig,
+        week_num: int
+    ) -> Tuple[Optional[Dict], Optional[str]]:
+        """Generiert eine einzelne Woche"""
+        
+        week_days = []
+        
+        for day in WOCHENTAGE:
+            # Generiere Tag
+            prompt = self.prompt_generator.create_day_prompt(day, config)
+            result, error, _ = self.api_client.call_api(prompt, MAX_TOKENS_TAG)
+            
+            if error:
+                logger.error(f"Fehler bei Tag {day}: {error}")
+                # Retry einmal
+                result, error, _ = self.api_client.call_api(prompt, MAX_TOKENS_TAG)
+                if error:
+                    return None, f"Fehler bei {day}: {error}"
+            
+            # Validiere Tag
+            if result and "tag" in result and "menues" in result:
+                errors = self.validator.validate_day_structure(result, config.menulinien)
+                if errors:
+                    logger.warning(f"Validierungsfehler für {day}: {errors}")
+                    # Versuche zu korrigieren
+                    result = self._fix_day_structure(result, config)
+                
+                week_days.append(result)
+            else:
+                return None, f"Ungültige Struktur für {day}"
+        
+        week_data = {
+            "woche": week_num,
+            "tage": week_days
+        }
+        
+        return week_data, None
+    
+    def _fix_day_structure(self, day: Dict, config: PlanConfig) -> Dict:
+        """Versucht, Strukturfehler in Tagesplan zu beheben"""
+        
+        # Stelle sicher, dass richtige Anzahl Menüs vorhanden
+        if "menues" in day:
+            menus = day["menues"]
+            
+            # Zu viele Menüs: Kürzen
+            if len(menus) > config.menulinien:
+                day["menues"] = menus[:config.menulinien]
+            
+            # Zu wenige Menüs: Duplizieren
+            elif len(menus) < config.menulinien and menus:
+                while len(day["menues"]) < config.menulinien:
+                    # Dupliziere letztes Menü mit angepasstem Namen
+                    last_menu = dict(menus[-1])
+                    idx = len(day["menues"])
+                    if idx < len(config.menu_namen):
+                        last_menu["menuName"] = config.menu_namen[idx]
+                    day["menues"].append(last_menu)
+        
+        return day
+    
+    def _generate_recipes(
+        self,
+        speiseplan: Dict
+    ) -> Tuple[Optional[Dict], Optional[str]]:
+        """Generiert Rezepte für Speiseplan"""
+        
+        prompt = self.prompt_generator.create_recipe_prompt(speiseplan)
+        result, error, _ = self.api_client.call_api(prompt, MAX_TOKENS_REZEPTE)
+        
+        if error:
+            logger.error(f"Fehler bei Rezeptgenerierung: {error}")
+            return None, error
+        
+        if result and "rezepte" in result:
+            return result, None
+        
+        return None, "Ungültige Rezeptstruktur"
+    
+    def _validate_plan(self, speiseplan: Dict) -> Optional[Dict]:
+        """Führt Qualitätsprüfung durch"""
+        
+        try:
+            prompt = self.prompt_generator.create_validation_prompt(speiseplan)
+            result, error, _ = self.api_client.call_api(prompt, 8000)
+            
+            if not error and result:
+                return result.get("pruefung")
+        except Exception as e:
+            logger.error(f"Fehler bei Validierung: {e}")
+        
+        return None
+    
+    def _generate_direct(
+        self,
+        config: PlanConfig,
+        progress_callback=None
+    ) -> Tuple[Optional[Dict], Optional[Dict], Optional[Dict], Optional[str]]:
+        """Direkte Generierung für kleine Pläne"""
+        
+        # Generiere komplette Woche
+        week_data, error = self._generate_week(config, 1)
+        if error:
+            return None, None, None, error
+        
+        complete_plan = {
+            "speiseplan": {
+                "wochen": [week_data],
+                "menuLinien": config.menulinien,
+                "menuNamen": config.menu_namen
+            }
+        }
+        
+        # Generiere Rezepte
+        recipes, recipe_error = self._generate_recipes(complete_plan)
+        
+        # Qualitätsprüfung
+        validation = self._validate_plan(complete_plan)
+        
+        return complete_plan, recipes, validation, None
+
+# ===================== DATENBANK-INTEGRATION =====================
 
 from prompts import get_speiseplan_prompt, get_rezepte_prompt, get_pruefung_prompt
 from pdf_generator import erstelle_speiseplan_pdf, erstelle_rezept_pdf, erstelle_alle_rezepte_pdf
 from rezept_datenbank import RezeptDatenbank
-from cost_tracker import CostTracker, zeige_kosten_anzeige, zeige_kosten_warnung_bei_grossen_plaenen, zeige_kosten_in_sidebar, KOSTEN_TRACKING_AKTIVIERT
+from cost_tracker import (
+    CostTracker,
+    zeige_kosten_anzeige,
+    zeige_kosten_warnung_bei_grossen_plaenen,
+    zeige_kosten_in_sidebar,
+    KOSTEN_TRACKING_AKTIVIERT
+)
 
-# ===================== Konfiguration =====================
+# ===================== STREAMLIT UI =====================
 
-VERSION = "2.0.1"
-VERSION_DATUM = "27.10.2025"
-SCHWELLWERT_AUFTEILUNG = 8  # sehr niedrig – zwingt Split früh
-
-KOSTEN_TRACKING = KOSTEN_TRACKING_AKTIVIERT()
-
-@st.cache_resource
-def hole_datenbank():
-    return RezeptDatenbank()
-
-DB = hole_datenbank()
-
-st.set_page_config(page_title="Speiseplan-Generator", layout="wide", page_icon="👨‍🍳")
-
-# ===================== Anthropic-Client =====================
-
-def _anthropic_call(payload: Dict[str,Any], api_key: str):
-    return requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01"
-        },
-        json=payload,
-        timeout=180
-    )
-
-def rufe_claude_api(user_prompt: str, api_key: str, max_tokens: int = 20000):
-    """
-    Bevorzugt Tool-Call 'return_json'; fällt bei Bedarf auf Text + robustes Parsing zurück.
-    """
-    tools = [{
-        "name": "return_json",
-        "description": "Gib das Ergebnis als JSON im 'input' dieses Tool-Calls zurück.",
-        "input_schema": {"type": "object"}
-    }]
-    payload = {
-        "model": "claude-sonnet-4-20250514",
-        "max_tokens": max_tokens,
-        "temperature": 0,
-        "top_p": 0,
-        "messages": [{"role": "user", "content": user_prompt}],
-        "tools": tools,
-        "tool_choice": {"type": "tool", "name": "return_json"},
-        "system": (
-            "Gib dein Ergebnis ausschließlich als Tool-Aufruf 'return_json' zurück. "
-            "Keine Erklärungen, kein Markdown, keine Kommentare, keine Codeblöcke. "
-            "Der gesamte Inhalt muss im 'input'-Feld eines einzigen Tool-Calls liegen."
+class StreamlitUI:
+    """Streamlit User Interface Handler"""
+    
+    def __init__(self):
+        self.setup_page()
+        self.db = self.get_database()
+    
+    def setup_page(self):
+        """Konfiguriert Streamlit-Seite"""
+        st.set_page_config(
+            page_title=PAGE_TITLE,
+            layout=LAYOUT,
+            page_icon=PAGE_ICON,
+            initial_sidebar_state="expanded"
         )
-    }
-    try:
-        r = _anthropic_call(payload, api_key)
-        if r.status_code != 200:
-            try:
-                detail = r.json()
-                msg = detail.get('error', {}).get('message', r.text)
-            except Exception:
-                msg = r.text
-            return None, f"API-Fehler: Status {r.status_code} - {msg}", None
-
-        data = r.json()
-        # 1) tool_use?
-        ti = _extract_tool_input_from_anthropic(data)
-        if ti is not None:
-            return _waehle_root(ti), None, data.get("usage", {})
-
-        # 2) Fallback: Text → robust parsen
-        content0 = data.get("content", [{}])[0]
-        response_text = content0.get("text") if isinstance(content0, dict) else str(content0)
-        try:
-            parsed = json.loads(response_text)
-            return _waehle_root(parsed), None, data.get("usage", {})
-        except json.JSONDecodeError:
-            pass
-        try:
-            parsed = parse_json_loose(response_text)
-            return _waehle_root(parsed), None, data.get("usage", {})
-        except json.JSONDecodeError as e:
-            # einmaliger Retry mit response_format=json
-            payload_retry = dict(payload)
-            payload_retry["response_format"] = {"type": "json"}
-            r2 = _anthropic_call(payload_retry, api_key)
-            if r2.status_code != 200:
-                try:
-                    detail = r2.json()
-                    msg = detail.get('error', {}).get('message', r2.text)
-                except Exception:
-                    msg = r2.text
-                return None, f"API-Fehler (Retry): Status {r2.status_code} - {msg}", None
-            d2 = r2.json()
-            ti2 = _extract_tool_input_from_anthropic(d2)
-            if ti2 is not None:
-                return _waehle_root(ti2), None, d2.get("usage", {})
-            c2 = d2.get("content", [{}])[0]
-            t2 = c2.get("text") if isinstance(c2, dict) else str(c2)
-            try:
-                parsed2 = json.loads(t2)
-                return _waehle_root(parsed2), None, d2.get("usage", {})
-            except json.JSONDecodeError as e2:
-                t2s = sanitize_json_text(t2)
-                parsed3 = parse_json_loose(t2s)
-                return _waehle_root(parsed3), None, d2.get("usage", {})
-    except requests.exceptions.Timeout:
-        return None, "Timeout: Die API-Anfrage hat zu lange gedauert (>3min). Reduzieren Sie die Anzahl Wochen/Menülinien.", None
-    except requests.exceptions.RequestException as e:
-        return None, f"Netzwerkfehler: {str(e)}", None
-    except Exception as e:
-        return None, f"Unerwarteter Fehler: {str(e)}", None
-
-# ===================== Plan-Erzeugung tageweise =====================
-
-def _tag_prompt_ein_tag(tagname: str, menulinien: int, menu_namen: List[str]) -> str:
-    menu_liste = "\n".join([f"{i+1}. {name}" for i, name in enumerate(menu_namen)])
-    return (
-        "Du bist ein diätisch ausgebildeter Küchenmeister für Gemeinschaftsverpflegung. "
-        "ANTWORTFORMAT: Antworte ausschließlich als Tool-Aufruf 'return_json'. "
-        "Gib das komplette Ergebnis als EIN JSON-Objekt im Feld 'input' zurück. "
-        "Kein Markdown, keine Erklärungen.\n\n"
-        f"AUFGABE: Erstelle einen professionellen Speiseplan **für genau einen Tag: {tagname}** "
-        f"mit {menulinien} Menülinie(n).\n\n"
-        f"MENÜLINIEN:\n{menu_liste}\n\n"
-        "VORGABEN:\n"
-        "- Seniorengerecht; Mittag mit 2–3 Beilagen + Allergenliste; Nährwerte (kcal, Protein)\n"
-        "- Frühstück, Mittag (Vorspeise/Hauptgericht/Beilagen/Dessert/Nährwerte/Allergene), "
-        "Abendessen, Zwischenmahlzeit\n\n"
-        "ANTWORT-SCHEMA (JSON):\n"
-        "{\n"
-        f'  "tag": "{tagname}",\n'
-        '  "menues": [\n'
-        '    {\n'
-        '      "menuName": "Name der Menülinie",\n'
-        '      "fruehstueck": {"hauptgericht": "...", "beilagen": ["..."], "getraenk": "..."},\n'
-        '      "mittagessen": {\n'
-        '        "vorspeise": "...",\n'
-        '        "hauptgericht": "...",\n'
-        '        "beilagen": ["...", "...", "..."],\n'
-        '        "nachspeise": "...",\n'
-        '        "naehrwerte": {"kalorien": "ca. X kcal", "protein": "X g"},\n'
-        '        "allergene": ["..."]\n'
-        '      },\n'
-        '      "zwischenmahlzeit": "...",\n'
-        '      "abendessen": {"hauptgericht": "...", "beilagen": ["..."], "getraenk": "..."}\n'
-        '    }\n'
-        '  ]\n'
-        '}\n'
-        f'WICHTIG: Gib **genau {menulinien}** Einträge in "menues" zurück, je einen pro Menülinie.'
-    )
-
-def _generiere_woche_tageweise(api_key: str, menulinien: int, menu_namen: List[str]) -> Tuple[Optional[Dict[str,Any]], Optional[str]]:
-    tage_struct = []
-    for tag in TAGE:
-        p = _tag_prompt_ein_tag(tag, menulinien, menu_namen)
-        day_data, error, _ = rufe_claude_api(p, api_key, max_tokens=6000)
-        if error:
-            # Einmaliger Retry
-            day_data2, error2, _ = rufe_claude_api(p, api_key, max_tokens=6000)
-            if error2:
-                return None, f"Tag '{tag}': {error2}"
-            day_data = day_data2
-
-        if not isinstance(day_data, dict) or "tag" not in day_data or "menues" not in day_data:
-            return None, f"Unerwartete Tagesstruktur für {tag}"
-
-        # Sicherheit: Anzahl linien erzwingen
-        menues = day_data.get("menues", [])
-        if len(menues) != menulinien:
-            if len(menues) > menulinien:
-                menues = menues[:menulinien]
-            elif len(menues) < menulinien and len(menues) > 0:
-                last = menues[-1]
-                while len(menues) < menulinien:
-                    menues.append(last)
-
-        # Minimal-Validierung pro Tag
-        errs = _validate_day_struct({"tag": day_data["tag"], "menues": menues}, menulinien)
-        if errs:
-            return None, f"{tag}: " + "; ".join(errs)
-
-        tage_struct.append({"tag": day_data["tag"], "menues": menues})
-
-    week = {"woche": 1, "tage": tage_struct}
-    return week, None
-
-# ===================== Geschäftslogik: Gestuft =====================
-
-def generiere_speiseplan_gestuft(wochen: int, menulinien: int, menu_namen: List[str], api_key: str, cost_tracker):
-    st.success(f"✅ **Gestufte Generierung aktiv** – {wochen} Woche(n) werden einzeln erzeugt.")
-    alle_wochen, alle_rezepte = [], []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    for woche_nr in range(1, wochen + 1):
-        status_text.text(f"Woche {woche_nr} von {wochen} – Plan")
-        progress_bar.progress((woche_nr - 1) / wochen)
-
-        with st.spinner(f"📅 Woche {woche_nr} (tageweise)…"):
-            week_struct, week_err = _generiere_woche_tageweise(api_key, menulinien, menu_namen)
-            if week_err:
-                st.error(f"❌ Fehler bei Woche {woche_nr}: {week_err}")
-                return None, None, None, f"Fehler bei Woche {woche_nr}: {week_err}", cost_tracker
-
-            week_struct["woche"] = woche_nr
-            # Wochen-Validierung
-            w_errs = _validate_week_struct(week_struct, menulinien)
-            if w_errs:
-                return None, None, None, f"Strukturfehler in Woche {woche_nr}: {'; '.join(w_errs)}", cost_tracker
-
-            alle_wochen.append(week_struct)
-            # Für Rezepte brauchen wir ein Mini-Planobjekt
-            speiseplan_week = {
-                "speiseplan": {
-                    "wochen": [week_struct],
-                    "menuLinien": menulinien,
-                    "menuNamen": menu_namen
-                }
-            }
-
-        # Rezepte in 2-Tage-Häppchen + Coverage-Check
-        with st.spinner(f"📖 Woche {woche_nr}: Rezepte erzeugen…"):
-            w_tage = week_struct["tage"]
-            tage_pro_gruppe = 2
-            anzahl_gruppen = (len(w_tage) + tage_pro_gruppe - 1) // tage_pro_gruppe
-            st.info(f"🔄 Woche {woche_nr}: {anzahl_gruppen} Gruppen à {tage_pro_gruppe} Tage")
-
-            rezepte_data_w = {"rezepte": []}
-            for g in range(anzahl_gruppen):
-                start, end = g * tage_pro_gruppe, min((g+1) * tage_pro_gruppe, len(w_tage))
-                gruppe_plan = {
-                    "speiseplan": {
-                        "wochen": [{"woche": woche_nr, "tage": _tage_slicen(w_tage, start, end)}],
-                        "menuLinien": menulinien,
-                        "menuNamen": menu_namen
-                    }
-                }
-                expected = _erwarte_rezept_keys(gruppe_plan)
-
-                with st.spinner(f"📦 Woche {woche_nr} – Gruppe {g+1}/{anzahl_gruppen}"):
-                    rez_prompt = get_rezepte_prompt(gruppe_plan)
-                    rez_res, _, usage = rufe_claude_api(rez_prompt, api_key, max_tokens=10000)
-                    if KOSTEN_TRACKING and cost_tracker and usage:
-                        cost_tracker.add_usage(usage)
-                    if rez_res and "rezepte" in rez_res:
-                        rezepte_data_w["rezepte"].extend(rez_res["rezepte"])
-
-                    missing = _delta_missing(expected, rezepte_data_w)
-                    tries = 0
-                    while missing and tries < 2:
-                        st.warning(f"🧩 Woche {woche_nr}, Gruppe {g+1}: {len(missing)} fehlend – Nachgenerierung…")
-                        sub_plan = _mini_plan_from_keys(gruppe_plan, missing)
-                        sub_prompt = get_rezepte_prompt(sub_plan)
-                        sub_res, _, usage2 = rufe_claude_api(sub_prompt, api_key, max_tokens=9000)
-                        if KOSTEN_TRACKING and cost_tracker and usage2:
-                            cost_tracker.add_usage(usage2)
-                        if sub_res and "rezepte" in sub_res:
-                            rezepte_data_w["rezepte"].extend(sub_res["rezepte"])
-                        missing = _delta_missing(expected, rezepte_data_w)
-                        tries += 1
-
-                    if missing:
-                        st.error(f"❗ Woche {woche_nr}, Gruppe {g+1}: {len(missing)} Rezept(e) fehlen weiterhin.")
-
-            # Woche speichern & sammeln
-            if rezepte_data_w["rezepte"]:
-                try:
-                    DB.speichere_alle_rezepte(rezepte_data_w)
-                except Exception as e:
-                    st.warning(f"⚠️ Woche {woche_nr}: Speichern fehlgeschlagen: {e}")
-                alle_rezepte.extend(rezepte_data_w["rezepte"])
-            else:
-                st.warning(f"⚠️ Woche {woche_nr}: Keine Rezepte erzeugt.")
-
-        progress_bar.progress(woche_nr / wochen)
-
-    # Gesamter Plan
-    full_plan = {
-        "speiseplan": {
-            "wochen": alle_wochen,
-            "menuLinien": menulinien,
-            "menuNamen": menu_namen
-        }
-    }
-    full_recipes = {"rezepte": alle_rezepte}
-
-    # Optionale Prüfung
-    pruefung_data = None
-    with st.spinner("🔍 Qualitätsprüfung…"):
-        try:
-            pruef_prompt = get_pruefung_prompt(full_plan)
-            pruefung_data, _, _ = rufe_claude_api(pruef_prompt, api_key, max_tokens=8000)
-        except Exception:
-            pass
-
-    st.success(f"✅ Fertig: {wochen} Woche(n), {len(alle_rezepte)} Rezept(e)")
-    return full_plan, full_recipes, pruefung_data, None, cost_tracker
-
-# ===================== Orchestrierung =====================
-
-def generiere_speiseplan_mit_rezepten(wochen: int, menulinien: int, menu_namen: List[str], api_key: str):
-    cost_tracker = CostTracker() if KOSTEN_TRACKING else None
-    total_menus = wochen * menulinien * 7
-
-    # Gestufter Modus praktisch immer an, wenn > 1 Woche oder > 3 Linien
-    if (total_menus > SCHWELLWERT_AUFTEILUNG) or (wochen > 1) or (menulinien > 3):
-        st.info(f"🔧 Gestufter Modus aktiv (Plan={total_menus}, Split ab {SCHWELLWERT_AUFTEILUNG}).")
-        return generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_tracker)
-
-    # Kleiner Plan (selten)
-    st.info("🧪 Kleiner Plan – Direktmodus (ohne Tages-Split).")
-    sp_prompt = get_speiseplan_prompt(wochen, menulinien, menu_namen)
-    sp_data, error, usage = rufe_claude_api(sp_prompt, api_key, max_tokens=16000)
-    if KOSTEN_TRACKING and cost_tracker and usage:
-        cost_tracker.add_usage(usage)
-    if error:
-        return None, None, None, f"Fehler beim Erstellen des Speiseplans: {error}", cost_tracker
-
-    # Schnellvalidierung: 7 Tage je Woche
-    for w in sp_data.get("speiseplan", {}).get("wochen", []):
-        errs = _validate_week_struct(w, menulinien)
-        if errs:
-            return None, None, None, f"Strukturfehler im Direktmodus: {'; '.join(errs)}", cost_tracker
-
-    rez_prompt = get_rezepte_prompt(sp_data)
-    rez_data, err_r, usage2 = rufe_claude_api(rez_prompt, api_key, max_tokens=16000)
-    if KOSTEN_TRACKING and cost_tracker and usage2:
-        cost_tracker.add_usage(usage2)
-    if err_r:
-        return sp_data, None, None, f"Fehler bei Rezept-Generierung: {err_r}", cost_tracker
-
-    return sp_data, rez_data, None, None, cost_tracker
-
-# ===================== UI-Funktionen =====================
-
-def zeige_sidebar():
-    with st.sidebar:
-        st.header("⚙️ Einstellungen")
-        api_key = st.text_input("🔑 Anthropic API-Key", type="password", value=st.session_state.get('api_key',''))
-        st.session_state['api_key'] = api_key
-        st.divider()
-        
-        wochen = st.number_input("📅 Anzahl Wochen", min_value=1, max_value=4, value=1)
-        menulinien = st.number_input("🍽️ Anzahl Menülinien", min_value=1, max_value=5, value=2)
-        
-        menu_namen = []
-        if menulinien > 0:
-            st.markdown("**Namen der Menülinien:**")
-            default_namen = ["Vollkost", "Vegetarisch", "Schonkost", "Diabetiker", "Pürierkost"]
-            for i in range(menulinien):
-                default = default_namen[i] if i < len(default_namen) else f"Menülinie {i+1}"
-                name = st.text_input(f"Menülinie {i+1}", value=default, key=f"menu_{i}")
-                menu_namen.append(name)
-        
-        if KOSTEN_TRACKING:
-            zeige_kosten_in_sidebar()
-        
-        start = st.button("🚀 Speiseplan generieren", type="primary", use_container_width=True)
-        
-        st.divider()
-        with st.expander("ℹ️ Info"):
-            st.caption(f"Version: {VERSION}")
-            st.caption(f"Stand: {VERSION_DATUM}")
-            st.caption("👨‍🍳 Professionell für Gemeinschaftsverpflegung")
-        
-    return api_key, wochen, menulinien, menu_namen, start
-
-def zeige_speiseplan_tab(speiseplan, pruefung=None):
-    st.header("📋 Ihr Speiseplan")
     
-    try:
-        pdf = erstelle_speiseplan_pdf(speiseplan)
-        st.download_button("📄 PDF herunterladen", data=pdf, file_name="Speiseplan.pdf", mime="application/pdf", type="primary")
-    except Exception as e:
-        st.error(f"PDF-Fehler: {e}")
+    @st.cache_resource
+    def get_database(self):
+        """Holt Datenbank-Instanz (cached)"""
+        return RezeptDatenbank()
     
-    if pruefung:
-        with st.expander("🔍 Qualitätsprüfung", expanded=False):
-            if 'bewertungen' in pruefung:
-                cols = st.columns(len(pruefung['bewertungen']))
-                for i, bew in enumerate(pruefung['bewertungen']):
-                    with cols[i]:
-                        st.metric(bew['kategorie'], f"{bew['punkte']}/10")
-                        st.caption(bew['kommentar'])
-            if 'fazit' in pruefung:
-                st.info(pruefung['fazit'])
-
-    for w in speiseplan['speiseplan']['wochen']:
-        st.subheader(f"📅 Woche {w['woche']}")
-        for t in w['tage']:
-            st.markdown(f"### {t['tag']}")
-            for m in t['menues']:
-                with st.expander(f"**{m['menuName']}**", expanded=False):
-                    c1, c2, c3 = st.columns(3)
-                    with c1:
-                        st.markdown("**🌅 Frühstück**")
-                        st.write(m['fruehstueck']['hauptgericht'])
-                        if m['fruehstueck'].get('beilagen'):
-                            st.caption(", ".join(m['fruehstueck']['beilagen']))
-                        if m['fruehstueck'].get('getraenk'):
-                            st.caption(f"Getränk: {m['fruehstueck']['getraenk']}")
-                    with c2:
-                        st.markdown("**🍽️ Mittagessen**")
-                        if m['mittagessen'].get('vorspeise'):
-                            st.caption(f"Vorspeise: {m['mittagessen']['vorspeise']}")
-                        st.write(f"**{m['mittagessen']['hauptgericht']}**")
-                        if m['mittagessen'].get('beilagen'):
-                            st.success(f"Beilagen: {', '.join(m['mittagessen']['beilagen'])}")
-                        if m['mittagessen'].get('nachspeise'):
-                            st.caption(f"Nachspeise: {m['mittagessen']['nachspeise']}")
-                        if m['mittagessen'].get('naehrwerte'):
-                            st.caption(f"📊 {m['mittagessen']['naehrwerte'].get('kalorien','')} | Protein: {m['mittagessen']['naehrwerte'].get('protein','')}")
-                        if m['mittagessen'].get('allergene'):
-                            st.warning(f"⚠️ Allergene: {', '.join(m['mittagessen']['allergene'])}")
-                    with c3:
-                        st.markdown("**🌙 Abendessen**")
-                        st.write(m['abendessen']['hauptgericht'])
-                        if m['abendessen'].get('beilagen'):
-                            st.caption(", ".join(m['abendessen']['beilagen']))
-                        if m['abendessen'].get('getraenk'):
-                            st.caption(f"Getränk: {m['abendessen']['getraenk']}")
+    def show_header(self):
+        """Zeigt Header der Anwendung"""
+        st.title(f"{PAGE_ICON} {PAGE_TITLE}")
+        st.markdown(f"*Version {VERSION} - {BUILD_TYPE}*")
+        st.markdown("**Für Gemeinschaftsverpflegung, Krankenhäuser & Senioreneinrichtungen**")
+        st.divider()
+    
+    def show_sidebar(self) -> Tuple[str, PlanConfig, bool]:
+        """
+        Zeigt Sidebar mit Einstellungen
+        
+        Returns:
+            Tuple von (api_key, plan_config, start_button_pressed)
+        """
+        with st.sidebar:
+            st.header("⚙️ Konfiguration")
+            
+            # API Key
+            api_key = st.text_input(
+                "🔑 Anthropic API-Key",
+                type="password",
+                help="Ihr Claude API-Schlüssel",
+                value=st.session_state.get("api_key", "")
+            )
+            st.session_state["api_key"] = api_key
+            
             st.divider()
+            
+            # Plan-Konfiguration
+            st.subheader("📋 Speiseplan-Einstellungen")
+            
+            wochen = st.number_input(
+                "📅 Anzahl Wochen",
+                min_value=1,
+                max_value=MAX_WOCHEN,
+                value=1,
+                help=f"Maximal {MAX_WOCHEN} Wochen möglich"
+            )
+            
+            menulinien = st.number_input(
+                "🍽️ Anzahl Menülinien",
+                min_value=1,
+                max_value=MAX_MENULINIEN,
+                value=2,
+                help=f"Maximal {MAX_MENULINIEN} Linien möglich"
+            )
+            
+            # Menü-Namen
+            st.subheader("📝 Menülinien-Namen")
+            menu_namen = []
+            default_names = [typ.value for typ in MenuTyp]
+            
+            for i in range(menulinien):
+                default = default_names[i] if i < len(default_names) else f"Menülinie {i+1}"
+                name = st.text_input(
+                    f"Linie {i+1}:",
+                    value=default,
+                    key=f"menu_{i}"
+                )
+                menu_namen.append(name)
+            
+            # Erweiterte Optionen
+            with st.expander("🔧 Erweiterte Optionen"):
+                st.checkbox("Automatische Qualitätsprüfung", value=True, key="auto_validation")
+                st.checkbox("Rezepte in Datenbank speichern", value=True, key="save_to_db")
+                st.checkbox("HACCP-Hinweise generieren", value=True, key="haccp_mode")
+            
+            # Kosten-Tracking
+            if KOSTEN_TRACKING_AKTIVIERT():
+                st.divider()
+                zeige_kosten_in_sidebar()
+            
+            # Start-Button
+            st.divider()
+            start = st.button(
+                "🚀 Speiseplan generieren",
+                type="primary",
+                use_container_width=True,
+                disabled=not api_key
+            )
+            
+            # Info-Box
+            st.divider()
+            with st.expander("ℹ️ Information"):
+                st.info(
+                    f"**Version:** {VERSION}  \n"
+                    f"**Stand:** {VERSION_DATUM}  \n"
+                    f"**Build:** {BUILD_TYPE}  \n"
+                    f"**Entwickelt für:** Professionelle Großküchen"
+                )
+            
+            try:
+                config = PlanConfig(wochen, menulinien, menu_namen) if start else None
+                return api_key, config, start
+            except ValueError as e:
+                st.error(str(e))
+                return api_key, None, False
+    
+    def show_progress(self, message: str):
+        """Zeigt Fortschrittsanzeige"""
+        return st.spinner(message)
+    
+    def show_speiseplan_tab(self, speiseplan: Dict, pruefung: Optional[Dict] = None):
+        """Zeigt Speiseplan-Tab"""
+        st.header("📋 Ihr Speiseplan")
+        
+        # PDF-Export
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            try:
+                pdf = erstelle_speiseplan_pdf(speiseplan)
+                st.download_button(
+                    "📄 Speiseplan als PDF exportieren",
+                    data=pdf,
+                    file_name=f"Speiseplan_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                    type="primary"
+                )
+            except Exception as e:
+                st.error(f"PDF-Export fehlgeschlagen: {e}")
+        
+        # Qualitätsprüfung
+        if pruefung:
+            with st.expander("🔍 Qualitätsbewertung", expanded=False):
+                if "bewertungen" in pruefung:
+                    cols = st.columns(len(pruefung["bewertungen"]))
+                    for i, bew in enumerate(pruefung["bewertungen"]):
+                        with cols[i]:
+                            prozent = (bew["punkte"] / bew["max_punkte"]) * 100
+                            st.metric(
+                                bew["kategorie"],
+                                f"{bew['punkte']}/{bew['max_punkte']}",
+                                f"{prozent:.0f}%"
+                            )
+                            st.caption(bew["kommentar"])
+                
+                if "gesamtpunkte" in pruefung:
+                    st.divider()
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric(
+                            "Gesamtbewertung",
+                            f"{pruefung['gesamtpunkte']}/{pruefung['max_gesamtpunkte']}"
+                        )
+                    with col2:
+                        st.metric("Note", pruefung.get("note", "N/A"))
+                    with col3:
+                        prozent = (pruefung["gesamtpunkte"] / pruefung["max_gesamtpunkte"]) * 100
+                        st.metric("Erfüllungsgrad", f"{prozent:.0f}%")
+                
+                if "fazit" in pruefung:
+                    st.info(f"**Fazit:** {pruefung['fazit']}")
+                
+                if "empfehlungen" in pruefung and pruefung["empfehlungen"]:
+                    st.warning("**Verbesserungsvorschläge:**")
+                    for emp in pruefung["empfehlungen"]:
+                        st.write(f"• {emp}")
+        
+        # Speiseplan-Anzeige
+        for woche in speiseplan["speiseplan"]["wochen"]:
+            st.subheader(f"📅 Woche {woche['woche']}")
+            
+            for tag in woche["tage"]:
+                with st.container():
+                    st.markdown(f"### {tag['tag']}")
+                    
+                    # Zeige alle Menülinien für diesen Tag
+                    cols = st.columns(len(tag["menues"]))
+                    
+                    for idx, menu in enumerate(tag["menues"]):
+                        with cols[idx]:
+                            with st.expander(f"**{menu['menuName']}**", expanded=True):
+                                # Frühstück
+                                st.markdown("**🌅 Frühstück**")
+                                st.write(menu["fruehstueck"]["hauptgericht"])
+                                if menu["fruehstueck"].get("beilagen"):
+                                    st.caption(f"Mit: {', '.join(menu['fruehstueck']['beilagen'])}")
+                                if menu["fruehstueck"].get("getraenk"):
+                                    st.caption(f"Getränk: {menu['fruehstueck']['getraenk']}")
+                                
+                                st.divider()
+                                
+                                # Mittagessen
+                                st.markdown("**🍽️ Mittagessen**")
+                                if menu["mittagessen"].get("vorspeise"):
+                                    st.caption(f"*Vorspeise:* {menu['mittagessen']['vorspeise']}")
+                                st.write(f"**{menu['mittagessen']['hauptgericht']}**")
+                                if menu["mittagessen"].get("beilagen"):
+                                    st.success(f"Beilagen: {', '.join(menu['mittagessen']['beilagen'])}")
+                                if menu["mittagessen"].get("nachspeise"):
+                                    st.caption(f"*Nachspeise:* {menu['mittagessen']['nachspeise']}")
+                                
+                                # Nährwerte
+                                if menu["mittagessen"].get("naehrwerte"):
+                                    nw = menu["mittagessen"]["naehrwerte"]
+                                    st.caption(
+                                        f"📊 {nw.get('kalorien', 'N/A')} | "
+                                        f"Protein: {nw.get('protein', 'N/A')} | "
+                                        f"Fett: {nw.get('fett', 'N/A')}"
+                                    )
+                                
+                                # Allergene
+                                if menu["mittagessen"].get("allergene"):
+                                    st.warning(
+                                        f"⚠️ Allergene: {', '.join(menu['mittagessen']['allergene'])}"
+                                    )
+                                
+                                # Zwischenmahlzeit
+                                if menu.get("zwischenmahlzeit"):
+                                    st.divider()
+                                    st.markdown("**☕ Zwischenmahlzeit**")
+                                    st.caption(menu["zwischenmahlzeit"])
+                                
+                                # Abendessen
+                                st.divider()
+                                st.markdown("**🌙 Abendessen**")
+                                st.write(menu["abendessen"]["hauptgericht"])
+                                if menu["abendessen"].get("beilagen"):
+                                    st.caption(f"Mit: {', '.join(menu['abendessen']['beilagen'])}")
+                                if menu["abendessen"].get("getraenk"):
+                                    st.caption(f"Getränk: {menu['abendessen']['getraenk']}")
+                
+                st.divider()
+    
+    def show_recipes_tab(self, rezepte_data: Optional[Dict]):
+        """Zeigt Rezepte-Tab"""
+        st.header("📖 Detaillierte Rezepte")
+        
+        if not rezepte_data or "rezepte" not in rezepte_data or not rezepte_data["rezepte"]:
+            st.info("Keine Rezepte verfügbar.")
+            return
+        
+        # Export-Optionen
+        col1, col2 = st.columns(2)
+        with col1:
+            try:
+                pdf = erstelle_alle_rezepte_pdf(rezepte_data)
+                st.download_button(
+                    "📚 Alle Rezepte als PDF",
+                    data=pdf,
+                    file_name=f"Rezepte_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf",
+                    type="primary"
+                )
+            except Exception as e:
+                st.error(f"PDF-Export fehlgeschlagen: {e}")
+        
+        # Filter-Optionen
+        st.divider()
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            woche_filter = st.selectbox(
+                "Woche filtern:",
+                ["Alle"] + list(set(str(r.get("woche", 1)) for r in rezepte_data["rezepte"]))
+            )
+        with col2:
+            menu_filter = st.selectbox(
+                "Menülinie filtern:",
+                ["Alle"] + list(set(r.get("menu", "") for r in rezepte_data["rezepte"]))
+            )
+        with col3:
+            suche = st.text_input("🔍 Rezept suchen:")
+        
+        # Rezepte anzeigen
+        for rezept in rezepte_data["rezepte"]:
+            # Filter anwenden
+            if woche_filter != "Alle" and str(rezept.get("woche", "")) != woche_filter:
+                continue
+            if menu_filter != "Alle" and rezept.get("menu", "") != menu_filter:
+                continue
+            if suche and suche.lower() not in rezept["name"].lower():
+                continue
+            
+            with st.expander(
+                f"{rezept['name']} - {rezept.get('menu', '')} (Woche {rezept.get('woche', '')})"
+            ):
+                # Header-Informationen
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.caption(f"📅 {rezept.get('tag', '')} • Woche {rezept.get('woche', '')}")
+                    st.caption(f"👥 {rezept.get('portionen', 100)} Portionen")
+                with col2:
+                    zeiten = rezept.get("zeiten", {})
+                    st.caption(f"⏱️ Vorbereitung: {zeiten.get('vorbereitung', 'N/A')}")
+                    st.caption(f"🔥 Garzeit: {zeiten.get('garzeit', 'N/A')}")
+                    st.caption(f"⏰ Gesamt: {zeiten.get('gesamt', 'N/A')}")
+                with col3:
+                    try:
+                        pdf = erstelle_rezept_pdf(rezept)
+                        st.download_button(
+                            "📄 PDF Export",
+                            data=pdf,
+                            file_name=f"Rezept_{rezept['name'].replace(' ', '_')}.pdf",
+                            mime="application/pdf"
+                        )
+                    except Exception as e:
+                        st.error(f"Export fehlgeschlagen: {e}")
+                
+                # Zutaten
+                st.markdown("### 🥘 Zutaten")
+                zutaten_cols = st.columns(2)
+                for i, zutat in enumerate(rezept.get("zutaten", [])):
+                    with zutaten_cols[i % 2]:
+                        text = f"• **{zutat['menge']}** {zutat['name']}"
+                        if zutat.get("hinweis"):
+                            text += f" _{zutat['hinweis']}_"
+                        st.write(text)
+                
+                # Zubereitung
+                st.markdown("### 👨‍🍳 Zubereitung")
+                for i, schritt in enumerate(rezept.get("zubereitung", []), 1):
+                    st.write(f"**Schritt {i}:** {schritt}")
+                
+                # Nährwerte
+                st.markdown("### 📊 Nährwerte pro Portion")
+                nw = rezept.get("naehrwerte", {})
+                nw_cols = st.columns(6)
+                nw_cols[0].metric("Kalorien", nw.get("kalorien", "N/A"))
+                nw_cols[1].metric("Protein", nw.get("protein", "N/A"))
+                nw_cols[2].metric("Fett", nw.get("fett", "N/A"))
+                nw_cols[3].metric("KH", nw.get("kohlenhydrate", "N/A"))
+                nw_cols[4].metric("Ballaststoffe", nw.get("ballaststoffe", "N/A"))
+                nw_cols[5].metric("Salz", nw.get("salz", "N/A"))
+                
+                # Allergene
+                if rezept.get("allergene"):
+                    st.warning(f"⚠️ **Allergene:** {', '.join(rezept['allergene'])}")
+                
+                # HACCP-Hinweise
+                if rezept.get("haccp"):
+                    with st.expander("🔒 HACCP-Hinweise"):
+                        haccp = rezept["haccp"]
+                        if haccp.get("kritische_punkte"):
+                            st.write("**Kritische Kontrollpunkte:**")
+                            for punkt in haccp["kritische_punkte"]:
+                                st.write(f"• {punkt}")
+                        if haccp.get("lagerung"):
+                            st.info(f"**Lagerung:** {haccp['lagerung']}")
+                
+                # Tipps & Variationen
+                col1, col2 = st.columns(2)
+                with col1:
+                    if rezept.get("tipps"):
+                        st.info(f"💡 **Tipp:** {rezept['tipps']}")
+                with col2:
+                    if rezept.get("variationen"):
+                        st.success(f"🔄 **Variationen:** {rezept['variationen']}")
+    
+    def show_library_tab(self):
+        """Zeigt Rezept-Bibliothek"""
+        st.header("📚 Rezept-Bibliothek")
+        st.markdown("*Ihre Sammlung bewährter Rezepte*")
+        
+        # Statistiken
+        stats = self.db.hole_statistiken()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("📖 Gesamt", stats["anzahl_rezepte"])
+        with col2:
+            if stats["meistverwendet"]:
+                st.metric("🏆 Top-Rezept", stats["meistverwendet"][0][1])
+        with col3:
+            st.metric("🏷️ Tags", len(stats["tags"]))
+        with col4:
+            if stats["bestbewertet"]:
+                st.metric("⭐ Beste Bewertung", f"{stats['bestbewertet'][0][1]}/5")
+        
+        st.divider()
+        
+        # Such- und Filteroptionen
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            suche = st.text_input("🔍 Suche:", placeholder="Name oder Zutat...")
+        with col2:
+            tags = st.multiselect(
+                "🏷️ Tags:",
+                options=list(stats["tags"].keys()) if stats["tags"] else []
+            )
+        with col3:
+            sortierung = st.selectbox(
+                "📊 Sortierung:",
+                ["Neueste", "Name A-Z", "Beste Bewertung", "Meistverwendet"]
+            )
+        with col4:
+            nur_favoriten = st.checkbox("⭐ Nur Favoriten", value=False)
+        
+        # Rezepte laden und filtern
+        rezepte = self.db.suche_rezepte(suchbegriff=suche, tags=tags)
+        
+        if nur_favoriten:
+            rezepte = [r for r in rezepte if r.get("bewertung", 0) >= 4]
+        
+        # Sortierung anwenden
+        if sortierung == "Name A-Z":
+            rezepte = sorted(rezepte, key=lambda x: x["name"])
+        elif sortierung == "Neueste":
+            rezepte = sorted(rezepte, key=lambda x: x["erstellt_am"], reverse=True)
+        elif sortierung == "Beste Bewertung":
+            rezepte = sorted(rezepte, key=lambda x: x.get("bewertung", 0), reverse=True)
+        elif sortierung == "Meistverwendet":
+            rezepte = sorted(rezepte, key=lambda x: x.get("verwendet_count", 0), reverse=True)
+        
+        st.divider()
+        st.write(f"**{len(rezepte)}** Rezepte gefunden")
+        
+        if not rezepte:
+            st.info("Keine Rezepte in der Bibliothek vorhanden.")
+            return
+        
+        # Rezepte anzeigen
+        for rezept in rezepte:
+            with st.expander(
+                f"{rezept['name']} {'⭐' * rezept.get('bewertung', 0)}"
+            ):
+                col1, col2, col3 = st.columns([3, 1, 1])
+                
+                with col1:
+                    st.caption(f"👥 {rezept.get('portionen', 100)} Portionen")
+                    if rezept.get("menu_linie"):
+                        st.caption(f"🍽️ {rezept['menu_linie']}")
+                    st.caption(
+                        f"⏱️ {rezept.get('vorbereitung', 'N/A')} | "
+                        f"{rezept.get('garzeit', 'N/A')}"
+                    )
+                    st.caption(
+                        f"📅 Erstellt: {rezept['erstellt_am'][:10]} | "
+                        f"🔄 {rezept.get('verwendet_count', 0)}x verwendet"
+                    )
+                
+                with col2:
+                    # Bewertung
+                    neue_bewertung = st.select_slider(
+                        "Bewertung:",
+                        options=[0, 1, 2, 3, 4, 5],
+                        value=rezept.get("bewertung", 0),
+                        key=f"rating_{rezept['id']}"
+                    )
+                    if neue_bewertung != rezept.get("bewertung", 0):
+                        self.db.bewerte_rezept(rezept["id"], neue_bewertung)
+                        st.rerun()
+                
+                with col3:
+                    # Aktionen
+                    if st.button("📄 PDF", key=f"pdf_{rezept['id']}"):
+                        try:
+                            # Konvertiere für PDF-Export
+                            export_rezept = {
+                                "name": rezept["name"],
+                                "portionen": rezept.get("portionen", 100),
+                                "zeiten": {
+                                    "vorbereitung": rezept.get("vorbereitung", ""),
+                                    "garzeit": rezept.get("garzeit", ""),
+                                    "gesamt": rezept.get("gesamtzeit", "")
+                                },
+                                "zutaten": rezept.get("zutaten", []),
+                                "zubereitung": rezept.get("zubereitung", []),
+                                "naehrwerte": rezept.get("naehrwerte", {}),
+                                "allergene": rezept.get("allergene", []),
+                                "tipps": rezept.get("tipps", ""),
+                                "variationen": rezept.get("variationen", "")
+                            }
+                            pdf = erstelle_rezept_pdf(export_rezept)
+                            st.download_button(
+                                "Download",
+                                data=pdf,
+                                file_name=f"{rezept['name'].replace(' ', '_')}.pdf",
+                                mime="application/pdf",
+                                key=f"dl_{rezept['id']}"
+                            )
+                        except Exception as e:
+                            st.error(f"Export fehlgeschlagen: {e}")
+                    
+                    if st.button("🗑️ Löschen", key=f"del_{rezept['id']}"):
+                        self.db.loesche_rezept(rezept["id"])
+                        st.success("Rezept gelöscht")
+                        st.rerun()
 
-def zeige_rezepte_tab(rezepte_data):
-    st.header("📖 Detaillierte Rezepte")
-    if not rezepte_data or 'rezepte' not in rezepte_data or len(rezepte_data['rezepte']) == 0:
-        st.info("Keine Rezepte verfügbar.")
-        return
-    try:
-        pdf = erstelle_alle_rezepte_pdf(rezepte_data)
-        st.download_button("📚 Alle Rezepte als PDF", data=pdf, file_name="Alle_Rezepte.pdf", mime="application/pdf")
-    except Exception as e:
-        st.error(f"PDF-Fehler: {e}")
-
-    for r in rezepte_data['rezepte']:
-        with st.expander(f"{r['name']} ({r.get('menu','')})"):
-            c1, c2 = st.columns([3,1])
-            with c1:
-                st.caption(f"{r.get('tag','')} • Woche {r.get('woche','')}")
-                st.caption(f"⏱️ Vorb.: {r['zeiten']['vorbereitung']} | Garzeit: {r['zeiten']['garzeit']}")
-            with c2:
-                try:
-                    rp = erstelle_rezept_pdf(r)
-                    st.download_button("📄 Als PDF", data=rp, file_name=f"Rezept_{r['name'].replace(' ','_')}.pdf", mime="application/pdf")
-                except Exception as e:
-                    st.error(f"PDF-Fehler: {e}")
-            st.markdown("### Zutaten")
-            cols = st.columns(2)
-            for i, z in enumerate(r['zutaten']):
-                with cols[i%2]:
-                    txt = f"**{z['menge']}** {z['name']}"
-                    if z.get('hinweis'): txt += f" – {z['hinweis']}"
-                    st.write(f"• {txt}")
-            st.markdown("### Zubereitung")
-            for i, s in enumerate(r['zubereitung'], 1):
-                st.write(f"**{i}.** {s}")
-            st.markdown("### Nährwerte (pro Portion)")
-            n = r['naehrwerte']; c = st.columns(5)
-            c[0].metric("kcal", n.get('kalorien','N/A'))
-            c[1].metric("Protein", n.get('protein','N/A'))
-            c[2].metric("Fett", n.get('fett','N/A'))
-            c[3].metric("KH", n.get('kohlenhydrate','N/A'))
-            c[4].metric("Ballaststoffe", n.get('ballaststoffe','N/A'))
-            if r.get('allergene'):
-                st.warning("⚠️ " + ", ".join(r['allergene']))
-
-def zeige_bibliothek_tab():
-    st.header("📚 Rezept-Bibliothek")
-    st.markdown("*Ihre Sammlung generierter Rezepte*")
-    stats = DB.hole_statistiken()
-    c = st.columns(4)
-    c[0].metric("Rezepte", stats['anzahl_rezepte'])
-    c[1].metric("Meistverwendet", stats['meistverwendet'][0][1] if stats['meistverwendet'] else 0)
-    c[2].metric("Tags", len(stats['tags']))
-    c[3].metric("Beste Bewertung", stats['bestbewertet'][0][1] if stats['bestbewertet'] else "-")
-
-    st.divider()
-    such = st.text_input("🔍 Suche nach Name/Zutat", "")
-    tags = st.multiselect("🏷️ Tags", options=list(stats['tags'].keys()) if stats['tags'] else [])
-    sortierung = st.selectbox("📊 Sortierung", ["Meistverwendet","Neueste","Name A-Z","Beste Bewertung"])
-
-    rezepte = DB.suche_rezepte(suchbegriff=such, tags=tags)
-    if sortierung == "Name A-Z":
-        rezepte = sorted(rezepte, key=lambda x: x['name'])
-    elif sortierung == "Neueste":
-        rezepte = sorted(rezepte, key=lambda x: x['erstellt_am'], reverse=True)
-    elif sortierung == "Beste Bewertung":
-        rezepte = sorted(rezepte, key=lambda x: x['bewertung'], reverse=True)
-
-    st.write(f"**{len(rezepte)}** Rezepte gefunden")
-    st.divider()
-    if not rezepte:
-        st.info("Noch keine Rezepte vorhanden.")
-        return
-
-    for r in rezepte:
-        with st.expander(f"{r['name']} {'⭐'*r['bewertung']}"):
-            c1, c2, c3 = st.columns([3,1,1])
-            with c1:
-                st.caption(f"Portionen: {r['portionen']}")
-                if r.get('menu_linie'): st.caption(f"🍽️ {r['menu_linie']}")
-                st.caption(f"⏱️ {r['vorbereitung']} | {r['garzeit']}")
-                st.caption(f"📅 {r['erstellt_am'][:10]} • 🔄 {r['verwendet_count']}x")
-            with c2:
-                try:
-                    exportable = {
-                        'name': r['name'],
-                        'menu': r.get('menu_linie',''),
-                        'tag': '',
-                        'woche': '',
-                        'portionen': r['portionen'],
-                        'zeiten': {'vorbereitung': r['vorbereitung'], 'garzeit': r['garzeit'], 'gesamt': r.get('gesamtzeit','')},
-                        'zutaten': r['zutaten'],
-                        'zubereitung': r['zubereitung'],
-                        'naehrwerte': r['naehrwerte'],
-                        'allergene': r['allergene'],
-                        'tipps': r['tipps'],
-                        'variationen': r['variationen']
-                    }
-                    pdf = erstelle_rezept_pdf(exportable)
-                    st.download_button("📄 PDF", data=pdf, file_name=f"Rezept_{r['name'].replace(' ','_')}.pdf", mime="application/pdf")
-                except Exception as e:
-                    st.error(f"PDF-Fehler: {e}")
-            with c3:
-                rating = st.select_slider("⭐ Bewertung", options=[0,1,2,3,4,5], value=r['bewertung'], key=f"rating_{r['id']}")
-                if rating != r['bewertung']:
-                    DB.bewerte_rezept(r['id'], rating)
-                    st.rerun()
-                if st.button("🗑️", key=f"del_{r['id']}"):
-                    DB.loesche_rezept(r['id']); st.success("Gelöscht."); st.rerun()
-
-# ===================== Main =====================
+# ===================== HAUPTPROGRAMM =====================
 
 def main():
-    st.title("👨‍🍳 Professioneller Speiseplan-Generator")
-    st.markdown("*Für Gemeinschaftsverpflegung, Krankenhäuser & Senioreneinrichtungen*")
-    st.divider()
-
-    api_key, wochen, menulinien, menu_namen, start = zeige_sidebar()
+    """Hauptfunktion der Anwendung"""
+    
+    # Initialisiere UI
+    ui = StreamlitUI()
+    ui.show_header()
+    
+    # Hole Konfiguration aus Sidebar
+    api_key, config, start = ui.show_sidebar()
+    
     if not api_key:
-        st.warning("Bitte API-Key eingeben.")
+        st.warning("⚠️ Bitte geben Sie Ihren Anthropic API-Key in der Sidebar ein.")
         return
-
-    if start:
-        if KOSTEN_TRACKING:
-            zeige_kosten_warnung_bei_grossen_plaenen(wochen, menulinien)
-
-        plan, rezepte, pruefung, error, tracker = generiere_speiseplan_mit_rezepten(
-            wochen, menulinien, menu_namen, api_key
-        )
-        if error:
-            st.error(error); return
-        st.session_state['speiseplan'] = plan
-        st.session_state['rezepte'] = rezepte
-        st.session_state['pruefung'] = pruefung
-        if KOSTEN_TRACKING and tracker:
-            st.session_state['cost_tracker'] = tracker
-        st.success("✅ Speiseplan & Rezepte erstellt!")
-        st.balloons()
-
-    if KOSTEN_TRACKING and st.session_state.get('cost_tracker'):
-        zeige_kosten_anzeige(st.session_state['cost_tracker'])
-
-    if st.session_state.get('speiseplan'):
-        t1, t2, t3 = st.tabs(["📋 Speiseplan", "📖 Rezepte", "📚 Bibliothek"])
-        with t1:
-            zeige_speiseplan_tab(st.session_state['speiseplan'], st.session_state.get('pruefung'))
-        with t2:
-            zeige_rezepte_tab(st.session_state.get('rezepte'))
-        with t3:
-            zeige_bibliothek_tab()
+    
+    # Generierung starten
+    if start and config:
+        try:
+            # Initialisiere API-Client und Generator
+            api_config = APIConfig(api_key=api_key)
+            api_client = AnthropicClient(api_config)
+            generator = SpeiseplanGenerator(api_client)
+            
+            # Kosten-Warnung bei großen Plänen
+            if KOSTEN_TRACKING_AKTIVIERT():
+                zeige_kosten_warnung_bei_grossen_plaenen(
+                    config.wochen,
+                    config.menulinien
+                )
+            
+            # Progress-Container
+            progress_container = st.container()
+            with progress_container:
+                with st.spinner("🔄 Generiere Speiseplan..."):
+                    # Generiere Plan
+                    speiseplan, rezepte, pruefung, error = generator.generate_complete_plan(
+                        config,
+                        progress_callback=lambda msg: st.info(msg)
+                    )
+                    
+                    if error:
+                        st.error(f"❌ Fehler: {error}")
+                        return
+                    
+                    # Speichere in Session State
+                    st.session_state["speiseplan"] = speiseplan
+                    st.session_state["rezepte"] = rezepte
+                    st.session_state["pruefung"] = pruefung
+                    
+                    # Speichere Rezepte in Datenbank
+                    if rezepte and st.session_state.get("save_to_db", True):
+                        try:
+                            ui.db.speichere_alle_rezepte(rezepte)
+                            st.success("✅ Rezepte in Datenbank gespeichert")
+                        except Exception as e:
+                            st.warning(f"⚠️ Datenbank-Speicherung fehlgeschlagen: {e}")
+                    
+                    st.success("✅ Speiseplan erfolgreich generiert!")
+                    st.balloons()
+        
+        except Exception as e:
+            st.error(f"❌ Unerwarteter Fehler: {str(e)}")
+            logger.exception("Fehler bei Generierung")
+            return
+    
+    # Zeige Ergebnisse in Tabs
+    if st.session_state.get("speiseplan"):
+        tab1, tab2, tab3 = st.tabs([
+            "📋 Speiseplan",
+            "📖 Rezepte",
+            "📚 Bibliothek"
+        ])
+        
+        with tab1:
+            ui.show_speiseplan_tab(
+                st.session_state["speiseplan"],
+                st.session_state.get("pruefung")
+            )
+        
+        with tab2:
+            ui.show_recipes_tab(st.session_state.get("rezepte"))
+        
+        with tab3:
+            ui.show_library_tab()
+    
     else:
+        # Zeige Willkommens-Nachricht
+        st.info(
+            "👋 Willkommen beim Professionellen Speiseplan-Generator!\n\n"
+            "Bitte konfigurieren Sie Ihre Einstellungen in der Sidebar und "
+            "klicken Sie auf 'Speiseplan generieren' um zu beginnen."
+        )
+        
+        # Quick-Access zur Bibliothek
         if st.button("📚 Rezept-Bibliothek öffnen"):
-            zeige_bibliothek_tab()
+            ui.show_library_tab()
+
+# ===================== ENTRY POINT =====================
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        st.error(f"Kritischer Fehler: {str(e)}")
+        logger.exception("Kritischer Anwendungsfehler")
