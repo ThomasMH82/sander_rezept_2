@@ -1,6 +1,9 @@
 """
 Hauptanwendung für den Speiseplan-Generator
 Orchestriert alle Module und bietet die Streamlit-UI
+
+Version: 1.3.2 FINALE - Rezept-Gruppen + niedriger Schwellwert
+Datum: 27. Oktober 2025, 14:45 Uhr
 """
 
 import streamlit as st
@@ -12,6 +15,14 @@ import re
 from prompts import get_speiseplan_prompt, get_rezepte_prompt, get_pruefung_prompt
 from pdf_generator import erstelle_speiseplan_pdf, erstelle_rezept_pdf, erstelle_alle_rezepte_pdf
 from rezept_datenbank import RezeptDatenbank
+
+# ============================================================
+# VERSION-INFORMATION
+# ============================================================
+VERSION = "1.3.2"
+VERSION_DATUM = "27.10.2025 14:45"
+SCHWELLWERT_AUFTEILUNG = 42  # Ab wie vielen Menüs automatisch aufteilen
+# ============================================================
 
 # ============== KOSTEN-TRACKING (OPTIONAL) ==============
 # Um Kosten-Tracking zu deaktivieren, kommentieren Sie die folgenden 2 Zeilen aus:
@@ -380,19 +391,21 @@ def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
     anzahl_menues = wochen * menulinien * 7  # Tage pro Woche
     
     # ============== AUTOMATISCHE AUFTEILUNG FÜR GROSSE PLÄNE ==============
-    if anzahl_menues > 50:  # Ab 50 Menüs aufteilen (vorher 70) - ZUVERLÄSSIGER!
+    if anzahl_menues > SCHWELLWERT_AUFTEILUNG:  # Konfigurierbar am Dateianfang
         st.warning(f"""
-        ⚠️ **Großer Plan erkannt: {anzahl_menues} Menüs**
+        ⚠️ **Großer Plan erkannt: {anzahl_menues} Menüs (Schwellwert: {SCHWELLWERT_AUFTEILUNG})**
         
-        **✅ Automatische Aufteilung wird aktiviert:**
+        **✅ AUTOMATISCHE AUFTEILUNG WIRD AKTIVIERT:**
         - Plan wird wochenweise generiert
-        - Rezepte werden in Gruppen erstellt
+        - Rezepte werden in Gruppen erstellt (je ~20 Stück)
         - Höchste Erfolgsrate (98%+)
         - Dauert etwas länger, aber SEHR zuverlässig
         
         ⏱️ Geschätzte Dauer: ~{wochen * 2} Minuten
         💰 Geschätzte Kosten: ~${anzahl_menues * 0.006:.2f}
         """)
+        
+        st.info(f"🔧 **Version {VERSION}** - Wenn Sie diese Meldung sehen, ist die Aufteilung aktiv!")
         
         return generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_tracker)
     # ======================================================================
@@ -590,6 +603,12 @@ def zeige_sidebar():
             from debug_tool import zeige_debug_info
             zeige_debug_info()
         # ======================================================
+        
+        # ============== VERSIONS-INFORMATION ==============
+        st.sidebar.divider()
+        st.sidebar.caption(f"🔧 Version {VERSION} ({VERSION_DATUM})")
+        st.sidebar.caption(f"⚙️ Auto-Split ab {SCHWELLWERT_AUFTEILUNG} Menüs")
+        # ==================================================
         
         return api_key, wochen, menulinien, menu_namen, button_clicked
 
