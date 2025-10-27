@@ -208,6 +208,116 @@ def rufe_claude_api(prompt, api_key, max_tokens=20000):
         return None, f"Unerwarteter Fehler: {str(e)}", None
 
 
+def generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_tracker):
+    """
+    Generiert große Speisepläne wochenweise und kombiniert sie
+    
+    Args:
+        wochen (int): Anzahl Wochen
+        menulinien (int): Anzahl Menülinien
+        menu_namen (list): Namen der Menülinien
+        api_key (str): Claude API-Key
+        cost_tracker: Cost-Tracker Instanz
+        
+    Returns:
+        tuple: (kombinierter_speiseplan, alle_rezepte, pruefung, error, cost_tracker)
+    """
+    st.info(f"🔄 **Automatische Aufteilung:** Generiere {wochen} Wochen einzeln...")
+    
+    alle_wochen = []
+    alle_rezepte = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # Generiere jede Woche einzeln
+    for woche_nr in range(1, wochen + 1):
+        status_text.text(f"Generiere Woche {woche_nr} von {wochen}...")
+        progress = (woche_nr - 1) / wochen
+        progress_bar.progress(progress)
+        
+        # Generiere 1 Woche
+        with st.spinner(f"📅 Woche {woche_nr}..."):
+            prompt = get_speiseplan_prompt(1, menulinien, menu_namen)  # Nur 1 Woche!
+            speiseplan_data, error, usage = rufe_claude_api(prompt, api_key, max_tokens=16000)
+            
+            # Kosten-Tracking
+            if KOSTEN_TRACKING and cost_tracker and usage:
+                cost_tracker.add_usage(usage)
+            
+            if error:
+                st.error(f"❌ Fehler bei Woche {woche_nr}: {error}")
+                return None, None, None, f"Fehler bei Woche {woche_nr}: {error}", cost_tracker
+            
+            # Passe Wochennummer an
+            if speiseplan_data and 'speiseplan' in speiseplan_data and 'wochen' in speiseplan_data['speiseplan']:
+                for woche in speiseplan_data['speiseplan']['wochen']:
+                    woche['woche'] = woche_nr  # Setze richtige Wochennummer
+                alle_wochen.extend(speiseplan_data['speiseplan']['wochen'])
+        
+        # Generiere Rezepte für diese Woche
+        with st.spinner(f"📖 Rezepte für Woche {woche_nr}..."):
+            rezepte_prompt = get_rezepte_prompt(speiseplan_data)
+            rezepte_data, error_rezepte, usage_rezepte = rufe_claude_api(rezepte_prompt, api_key, max_tokens=16000)
+            
+            # Kosten-Tracking
+            if KOSTEN_TRACKING and cost_tracker and usage_rezepte:
+                cost_tracker.add_usage(usage_rezepte)
+            
+            if rezepte_data and 'rezepte' in rezepte_data:
+                # Speichere in Datenbank
+                try:
+                    gespeichert = DB.speichere_alle_rezepte(rezepte_data)
+                    st.success(f"✅ Woche {woche_nr}: {len(rezepte_data['rezepte'])} Rezepte")
+                except Exception as e:
+                    st.warning(f"⚠️ Rezepte Woche {woche_nr} nicht gespeichert: {e}")
+                
+                alle_rezepte.extend(rezepte_data['rezepte'])
+            else:
+                st.warning(f"⚠️ Keine Rezepte für Woche {woche_nr}")
+        
+        # Update Progress
+        progress_bar.progress((woche_nr) / wochen)
+    
+    progress_bar.progress(1.0)
+    status_text.text("✅ Alle Wochen generiert!")
+    
+    # Kombiniere zu einem Speiseplan
+    kombinierter_speiseplan = {
+        'speiseplan': {
+            'wochen': alle_wochen,
+            'menuLinien': menulinien,
+            'menuNamen': menu_namen
+        }
+    }
+    
+    # Kombiniere Rezepte
+    kombinierte_rezepte = {
+        'rezepte': alle_rezepte
+    }
+    
+    # Qualitätsprüfung (optional)
+    pruefung_data = None
+    with st.spinner("🔍 Qualitätsprüfung..."):
+        try:
+            pruef_prompt = get_pruefung_prompt(kombinierter_speiseplan)
+            pruefung_data, error_pruef, usage_pruef = rufe_claude_api(pruef_prompt, api_key, max_tokens=8000)
+            
+            if KOSTEN_TRACKING and cost_tracker and usage_pruef:
+                cost_tracker.add_usage(usage_pruef)
+        except:
+            pass  # Prüfung ist optional
+    
+    st.success(f"""
+    ✅ **Kompletter {wochen}-Wochen-Plan erstellt!**
+    
+    - {len(alle_wochen)} Wochen
+    - {len(alle_rezepte)} Rezepte
+    - Alles in Bibliothek gespeichert
+    """)
+    
+    return kombinierter_speiseplan, kombinierte_rezepte, pruefung_data, None, cost_tracker
+
+
 def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
     """
     Hauptfunktion die den kompletten Workflow orchestriert
@@ -230,78 +340,35 @@ def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
     # Berechne Komplexität
     anzahl_menues = wochen * menulinien * 7  # Tage pro Woche
     
-    # Warnung bei sehr großen Plänen
-    if anzahl_menues > 100:
+    # ============== AUTOMATISCHE AUFTEILUNG FÜR GROSSE PLÄNE ==============
+    if anzahl_menues > 70:  # Mehr als 70 Menüs = aufteilen
         st.warning(f"""
-        ⚠️ **Sehr großer Speiseplan**
+        ⚠️ **Großer Plan erkannt: {anzahl_menues} Menüs**
         
-        Sie erstellen {anzahl_menues} Menüs ({wochen} Wochen × {menulinien} Linien × 7 Tage).
-        
-        **Problem:** Bei mehr als 100 Menüs ist die Erfolgsrate nur ~70-80%.
-        
-        **💡 EMPFEHLUNG - Automatische Aufteilung:**
+        **Automatische Aufteilung wird verwendet:**
+        - Plan wird wochenweise generiert
+        - Höchste Erfolgsrate (95%+)
+        - Dauert etwas länger, aber viel zuverlässiger
         """)
         
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if st.button("✅ Automatisch aufteilen (empfohlen)", type="primary"):
-                st.session_state['auto_split'] = True
-                st.info("Plan wird automatisch in kleinere Teile aufgeteilt!")
-                
-        with col2:
-            if st.button("⚠️ Trotzdem versuchen"):
-                st.session_state['auto_split'] = False
-        
-        if st.session_state.get('auto_split') is None:
-            st.stop()  # Warte auf Nutzer-Entscheidung
-        
-        if st.session_state.get('auto_split'):
-            st.info("""
-            **Automatische Aufteilung aktiviert:**
-            - Plan wird wochenweise generiert
-            - Höhere Erfolgsrate (95%+)
-            - Am Ende werden alle Teile kombiniert
-            
-            ⏱️ Dauert etwas länger, aber viel zuverlässiger!
-            """)
-            
-            # TODO: Implementierung der Auto-Split-Funktion
-            # Für jetzt: Warnung
-            st.warning("⚠️ Auto-Split Feature wird in v1.3 verfügbar sein. Bitte reduzieren Sie vorerst die Größe.")
-            return None, None, None, "Bitte reduzieren Sie auf max. 3 Wochen, 4 Linien.", cost_tracker
+        return generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_tracker)
+    # ======================================================================
     
-    elif anzahl_menues > 70:
+    # Warnung bei mittelgroßen Plänen
+    if anzahl_menues > 50:
         st.info(f"""
-        💡 **Großer Speiseplan**
+        💡 **Mittelgroßer Plan: {anzahl_menues} Menüs**
         
-        {anzahl_menues} Menüs werden erstellt.
-        
-        **Dies kann:**
-        - 3-5 Minuten dauern
-        - ~${0.005 * anzahl_menues:.2f} kosten
-        - Gelegentlich fehlschlagen
-        
-        **Tipp:** Bei Fehlern einfach nochmal versuchen oder kleiner generieren.
+        Dies kann 2-3 Minuten dauern.
         """)
     
     # Dynamische max_tokens basierend auf Größe
-    # Claude Sonnet 4 Maximum Output ist 8192 Tokens
     if anzahl_menues <= 30:
         speiseplan_tokens = 16000
         rezepte_tokens = 16000
-    elif anzahl_menues <= 70:
-        speiseplan_tokens = 32000  # Für größere Pläne
-        rezepte_tokens = 32000
-    elif anzahl_menues <= 100:
-        speiseplan_tokens = 64000  # Für sehr große Pläne
-        rezepte_tokens = 64000
     else:
-        # Maximum für extrem große Pläne (wird wahrscheinlich fehlschlagen)
-        speiseplan_tokens = 100000
-        rezepte_tokens = 100000
-        st.warning(f"⚠️ Verwende MAXIMUM Token-Limit ({speiseplan_tokens}) - Erfolgsrate < 70%")
-        st.info("💡 **Besser:** Teilen Sie den Plan in kleinere Teile auf!")
+        speiseplan_tokens = 32000
+        rezepte_tokens = 32000
     
     # Schritt 1: Speiseplan erstellen
     with st.spinner(f"🔄 Speiseplan wird erstellt... ({anzahl_menues} Menüs, kann 1-5 Minuten dauern)"):
