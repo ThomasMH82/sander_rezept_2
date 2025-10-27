@@ -62,7 +62,7 @@ def _json_tokenize(s: str):
     """
     Minimaler Tokenizer für JSON-ähnlichen Text:
     liefert (typ, lexem) für: { } [ ] : , STRING NUMBER TRUE FALSE NULL WHITESPACE OTHER
-    STRING achtet auf escapes, NUMBER ist vereinfacht (das reicht hier).
+    STRING achtet auf escapes, NUMBER ist vereinfacht.
     """
     i, n = 0, len(s)
     WHITESPACE = " \t\r\n"
@@ -75,7 +75,7 @@ def _json_tokenize(s: str):
             yield ("WS", s[i:j]); i = j; continue
         if ch in "{}[]:,":
             yield (ch, ch); i += 1; continue
-        if ch == '"' or ch == "'":  # toleranter: auch '…' -> wird später normalisiert
+        if ch == '"' or ch == "'":
             quote = ch
             j, esc = i+1, False
             while j < n:
@@ -89,105 +89,69 @@ def _json_tokenize(s: str):
                     break
                 j += 1
             yield ("STRING", s[i:j]); i = j; continue
-        # Literale true/false/null
         if s.startswith("true", i):   yield ("TRUE", "true");   i += 4; continue
         if s.startswith("false", i):  yield ("FALSE", "false"); i += 5; continue
         if s.startswith("null", i):   yield ("NULL", "null");   i += 4; continue
-        # Zahl grob erkennen
         if ch in digits:
             j = i+1
             while j < n and s[j] in digits+'eE': j += 1
             yield ("NUMBER", s[i:j]); i = j; continue
-        # Fallback: einzelnes Zeichen
         yield ("OTHER", ch); i += 1
-
 
 def _auto_insert_commas(raw: str) -> str:
     """
-    Heuristik: Fügt fehlende Kommata zwischen JSON-Elementen ein.
-    Funktionsweise:
-    - trackt Stack von Containern (OBJECT/ARRAY)
-    - wenn innerhalb OBJECT zwischen 'value' und folgendem 'key' (STRING gefolgt von :) kein Komma steht -> Komma einfügen
-    - wenn innerhalb ARRAY zwischen zwei 'value' kein Komma steht -> Komma einfügen
+    Heuristik: Ergänzt fehlende Kommata zwischen JSON-Elementen.
+    - In OBJECT: value … STRING ':'  -> Komma zwischen value und folgendem key
+    - In ARRAY:  value … value       -> Komma zwischen zwei Werten
     """
     tokens = list(_json_tokenize(raw))
     out = []
     stack = []  # "OBJECT" oder "ARRAY"
-    # Was ist ein "Wert"-Token?
     VALUE_TYPES = {"STRING", "NUMBER", "TRUE", "FALSE", "NULL", "}", "]"}
     i = 0
     while i < len(tokens):
         t, lex = tokens[i]
-
-        # Öffnende/Schließende Strukturen tracken
         if t == "{":
-            stack.append("OBJECT")
-            out.append(lex)
-            i += 1
-            continue
+            stack.append("OBJECT"); out.append(lex); i += 1; continue
         if t == "[":
-            stack.append("ARRAY")
-            out.append(lex)
-            i += 1
-            continue
+            stack.append("ARRAY"); out.append(lex); i += 1; continue
         if t == "}":
-            if stack and stack[-1] == "OBJECT":
-                stack.pop()
+            if stack and stack[-1] == "OBJECT": stack.pop()
             out.append(lex); i += 1; continue
         if t == "]":
-            if stack and stack[-1] == "ARRAY":
-                stack.pop()
+            if stack and stack[-1] == "ARRAY": stack.pop()
             out.append(lex); i += 1; continue
 
-        # Heuristik nur innerhalb eines Containers
         if stack:
             ctx = stack[-1]
-
-            # OBJECT-Fall:  value (STRING/NUMBER/… oder } ]) gefolgt von STRING ":"  -> Komma dazwischen, falls fehlt
             if ctx == "OBJECT":
-                # Schaue Lookahead: ... value  [WS]  STRING  [WS]  ':'
                 if t in VALUE_TYPES:
-                    # schreibe aktuellen token
                     out.append(lex)
                     j = i + 1
-                    # überspringe Whitespace
-                    while j < len(tokens) and tokens[j][0] == "WS": 
+                    while j < len(tokens) and tokens[j][0] == "WS":
                         out.append(tokens[j][1]); j += 1
-                    # wenn jetzt ein STRING kommt UND danach (über WS hinweg) ein ':'
                     if j < len(tokens) and tokens[j][0] == "STRING":
-                        # sehe noch eins weiter
                         jj = j + 1
                         buf_ws = []
                         while jj < len(tokens) and tokens[jj][0] == "WS":
                             buf_ws.append(tokens[jj][1]); jj += 1
                         if jj < len(tokens) and tokens[jj][0] == ":":
-                            # Wenn vorher KEIN Komma stand, füge Komma ein
-                            # (Wir sind ja im Zweig „nach value“, d.h. es fehlt hier eines)
                             out.append(",")
-                        # füge die WS (falls vorhanden) wieder ein und verlasse Entscheidung, der Rest wird normal geschrieben
                     i = j
                     continue
-
-            # ARRAY-Fall: value gefolgt von value -> Komma dazwischen
             if ctx == "ARRAY":
                 if t in VALUE_TYPES:
                     out.append(lex)
                     j = i + 1
-                    # überspringe Whitespace
                     while j < len(tokens) and tokens[j][0] == "WS":
                         out.append(tokens[j][1]); j += 1
-                    if j < len(tokens) and tokens[j][0] in VALUE_TYPES.union({"{" , "["}):
-                        # zwischen zwei Werten fehlt Komma -> einfügen
+                    if j < len(tokens) and (tokens[j][0] in VALUE_TYPES or tokens[j][0] in {"{","["}):
                         out.append(",")
                     i = j
                     continue
 
-        # default: einfach weiterreichen
-        out.append(lex)
-        i += 1
-
+        out.append(lex); i += 1
     return "".join(out)
-
 
 def parse_json_loose(text: str):
     """
@@ -196,18 +160,16 @@ def parse_json_loose(text: str):
       1) sanitize -> json.loads
       2) größte balancierte Teilstruktur -> json.loads
       3) sanitize (Zeilen-Kommas weg) -> json.loads
-      4) **auto comma insert** -> json.loads
+      4) auto comma insert -> json.loads
     """
     import json as _json, re as _re
     text = sanitize_json_text(text)
 
-    # 1) Direkt
     try:
         return _json.loads(text)
     except _json.JSONDecodeError:
         pass
 
-    # 2) Größte balancierte JSON-Teilstruktur
     candidates = []
     for opener, closer in [("{", "}"), ("[", "]")]:
         stack = []
@@ -223,50 +185,14 @@ def parse_json_loose(text: str):
         except _json.JSONDecodeError:
             continue
 
-    # 3) Zeilen-Kommas killen (selten nötig)
     cleaned = _re.sub(r",\s*\n", "\n", text)
     try:
         return _json.loads(cleaned)
     except _json.JSONDecodeError:
         pass
 
-    # 4) **Fehlende Kommata automatisch ergänzen**
     repaired = _auto_insert_commas(text)
     return _json.loads(repaired)
-
-    """
-    Robuster Fallback-Parser für Modellantworten,
-    falls Tool-Call/response_format doch mal Text liefern.
-    """
-    import json as _json, re as _re
-    text = sanitize_json_text(text)
-
-    # Direkter Versuch
-    try:
-        return _json.loads(text)
-    except _json.JSONDecodeError:
-        pass
-
-    # Größte balancierte JSON-Teilstruktur extrahieren
-    candidates = []
-    for opener, closer in [("{", "}"), ("[", "]")]:
-        stack = []
-        for i, ch in enumerate(text):
-            if ch == opener:
-                stack.append(i)
-            elif ch == closer and stack:
-                start = stack.pop()
-                candidates.append(text[start:i+1])
-
-    for cand in sorted(candidates, key=len, reverse=True):
-        try:
-            return _json.loads(cand)
-        except _json.JSONDecodeError:
-            continue
-
-    # Letzter Versuch: Kommas am Zeilenende killen
-    cleaned = _re.sub(r",\s*\n", "\n", text)
-    return _json.loads(cleaned)
 
 def _waehle_root(parsed):
     """
@@ -296,6 +222,118 @@ def _extract_tool_input_from_anthropic(data):
         pass
     return None
 # ================================================================
+
+# ======= Coverage-Check & Helfer (NEU) =====================================
+TAGE_REIHENFOLGE = ["Montag","Dienstag","Mittwoch","Donnerstag","Freitag","Samstag","Sonntag"]
+
+def _tage_slicen(tage_liste, start, ende):
+    """Schneidet Tage robust (index-basiert) und erhält die Originalstruktur."""
+    return tage_liste[start:ende]
+
+def _erwarte_rezept_schluessel(frag_speiseplan):
+    """
+    Extrahiert die Soll-Liste der zu erzeugenden Rezepte aus einem (Teil-)Speiseplan.
+    Key ist ein Tuple (woche, tag, menuName, hauptgericht).
+    """
+    expected = []
+    for w in frag_speiseplan['speiseplan']['wochen']:
+        w_nr = w.get('woche', 1)
+        for tag in w.get('tage', []):
+            tname = tag.get('tag')
+            for m in tag.get('menues', []):
+                mittag = m.get('mittagessen', {})
+                hg = mittag.get('hauptgericht')
+                expected.append((
+                    int(w_nr),
+                    str(tname or ""),
+                    str(m.get('menuName', "")),
+                    str(hg or "")
+                ))
+    return expected
+
+def _vorhandene_rezepte_schluessel(rezepte_data):
+    """Extrahiert vorhandene Rezepte-Schlüssel aus einem Rezept-Blob."""
+    have = []
+    if not rezepte_data or 'rezepte' not in rezepte_data:
+        return have
+    for r in rezepte_data['rezepte']:
+        have.append((
+            int(r.get('woche', 0) or 0),
+            str(r.get('tag', "")),
+            str(r.get('menu', "")),
+            str(r.get('name', ""))  # Name enthält i.d.R. Hauptgericht + Beilagen
+        ))
+    return have
+
+def _mappe_name_zu_hauptgericht(name: str) -> str:
+    """
+    Versucht aus dem Rezeptnamen das 'Hauptgericht' herauszuziehen (Heuristik).
+    """
+    if not name:
+        return name
+    import re
+    parts = re.split(r"\s+mit\s+| - | – ", name, maxsplit=1)
+    return parts[0].strip()
+
+def _delta_missing(expected_keys, rezepte_data):
+    """
+    Ermittelt, welche (Woche, Tag, Menü, Hauptgericht) noch fehlen.
+    Abgleich per Heuristik: Rezeptname -> Hauptgericht.
+    """
+    have = _vorhandene_rezepte_schluessel(rezepte_data)
+    have_index = set()
+    for (w, t, menu, name) in have:
+        have_index.add((w, t, menu, _mappe_name_zu_hauptgericht(name)))
+
+    missing = []
+    for (w, t, menu, hg) in expected_keys:
+        probe = (int(w), str(t), str(menu), str(hg))
+        if probe not in have_index:
+            missing.append(probe)
+    return missing
+
+def _baue_sub_speiseplan_aus_keys(full_speiseplan, keys):
+    """
+    Baut einen Mini-Speiseplan nur für die angegebenen (woche, tag, menuName, hauptgericht)-Keys.
+    Damit lassen sich gezielt fehlende Rezepte nachgenerieren.
+    """
+    result_wochen = []
+    from collections import defaultdict
+    index = defaultdict(lambda: defaultdict(list))  # w -> tag -> list menuName
+    hg_lookup = defaultdict(lambda: defaultdict(set))  # w -> tag -> set(hg)
+
+    for (w, t, menu, hg) in keys:
+        index[w][t].append(menu)
+        hg_lookup[w][t].add(hg)
+
+    for w in full_speiseplan['speiseplan']['wochen']:
+        w_nr = w.get('woche')
+        if w_nr not in index:
+            continue
+        neue_tage = []
+        for tag in w.get('tage', []):
+            tname = tag.get('tag')
+            if tname not in index[w_nr]:
+                continue
+            neue_menues = []
+            for m in tag.get('menues', []):
+                if m.get('menuName') in index[w_nr][tname]:
+                    hg = m.get('mittagessen', {}).get('hauptgericht')
+                    if hg in hg_lookup[w_nr][tname]:
+                        neue_menues.append(m)
+            if neue_menues:
+                neue_tage.append({"tag": tname, "menues": neue_menues})
+        if neue_tage:
+            result_wochen.append({"woche": w_nr, "tage": neue_tage})
+
+    return {
+        "speiseplan": {
+            "wochen": result_wochen,
+            "menuLinien": full_speiseplan['speiseplan'].get('menuLinien'),
+            "menuNamen": full_speiseplan['speiseplan'].get('menuNamen', [])
+        }
+    }
+# ========================================================================
 
 # Import der eigenen Module
 from prompts import get_speiseplan_prompt, get_rezepte_prompt, get_pruefung_prompt
@@ -336,7 +374,7 @@ st.set_page_config(
 # ==================== API-FUNKTIONEN ====================
 
 def bereinige_json_response(text):
-    """(Legacy) Entfernt Codefences & schneidet auf {}-Bereich zu – wird kaum noch genutzt."""
+    """(Legacy) Entfernt Codefences & schneidet auf {}-Bereich zu – bleibt als Fallback."""
     text = re.sub(r'```json\n?', '', text)
     text = re.sub(r'```\n?', '', text)
     text = text.strip()
@@ -532,8 +570,8 @@ def generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_t
     Generiert große Speisepläne wochenweise und kombiniert sie
     """
     st.success(f"✅✅✅ **AUTOMATISCHE AUFTEILUNG AKTIV!** Generiere {wochen} Wochen einzeln...")
-    st.info("📋 **Modus:** Wochenweise Generierung + Rezepte in Mini-Gruppen (max 15)")
-    st.warning(f"⏱️ **Dies dauert ~{wochen * 3} Minuten** - Bitte Geduld!")
+    st.info("📋 **Modus:** Wochenweise Generierung + Rezepte in Mini-Gruppen (max 2 Tage pro Gruppe)")
+    st.warning(f"⏱️ **Dies kann einige Minuten dauern** - Bitte Geduld!")
 
     alle_wochen = []
     alle_rezepte = []
@@ -544,6 +582,7 @@ def generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_t
         status_text.text(f"Generiere Woche {woche_nr} von {wochen}...")
         progress_bar.progress((woche_nr - 1) / wochen)
 
+        # --------- Woche: Speiseplan erzeugen ---------
         with st.spinner(f"📅 Woche {woche_nr}..."):
             prompt = get_speiseplan_prompt(1, menulinien, menu_namen)  # Nur 1 Woche!
             speiseplan_data, error, usage = rufe_claude_api(prompt, api_key, max_tokens=16000)
@@ -559,60 +598,76 @@ def generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_t
                 for woche in speiseplan_data['speiseplan']['wochen']:
                     woche['woche'] = woche_nr
                 alle_wochen.extend(speiseplan_data['speiseplan']['wochen'])
-
-        with st.spinner(f"📖 Rezepte für Woche {woche_nr}..."):
-            if speiseplan_data and 'speiseplan' in speiseplan_data:
-                anzahl_woche_menues = len(speiseplan_data.get('speiseplan', {}).get('wochen', [{}])[0].get('tage', [])) * menulinien
-
-                if anzahl_woche_menues > 15:
-                    st.info(f"📦 {anzahl_woche_menues} Menüs → Generiere in 2-3 Gruppen (max 15 pro Gruppe)")
-
-                    woche_data = speiseplan_data['speiseplan']['wochen'][0]
-                    tage = woche_data['tage']
-
-                    rezepte_pro_gruppe = 15
-                    menues_pro_tag = menulinien
-                    tage_pro_gruppe = max(1, rezepte_pro_gruppe // menues_pro_tag)
-                    anzahl_gruppen = (len(tage) + tage_pro_gruppe - 1) // tage_pro_gruppe
-                    st.info(f"🔄 Aufteilen in {anzahl_gruppen} Gruppen à ~{tage_pro_gruppe} Tage")
-
-                    alle_rezepte_woche = []
-
-                    for gruppe_nr in range(anzahl_gruppen):
-                        start_idx = gruppe_nr * tage_pro_gruppe
-                        end_idx = min((gruppe_nr + 1) * tage_pro_gruppe, len(tage))
-                        tage_gruppe = tage[start_idx:end_idx]
-                        gruppe_data = {'speiseplan': {'wochen': [{'tage': tage_gruppe, 'woche': woche_nr}], 'menuLinien': menulinien, 'menuNamen': menu_namen}}
-
-                        with st.spinner(f"📖 Gruppe {gruppe_nr + 1}/{anzahl_gruppen} ({len(tage_gruppe)} Tage)..."):
-                            rezepte_prompt = get_rezepte_prompt(gruppe_data)
-                            rezepte_data_gruppe, _, usage_gruppe = rufe_claude_api(rezepte_prompt, api_key, max_tokens=12000)
-
-                            if KOSTEN_TRACKING and cost_tracker and usage_gruppe:
-                                cost_tracker.add_usage(usage_gruppe)
-
-                            if rezepte_data_gruppe and 'rezepte' in rezepte_data_gruppe:
-                                alle_rezepte_woche.extend(rezepte_data_gruppe['rezepte'])
-                                st.success(f"✅ Gruppe {gruppe_nr + 1}: {len(rezepte_data_gruppe['rezepte'])} Rezepte")
-
-                    rezepte_data = {'rezepte': alle_rezepte_woche}
-                else:
-                    st.info(f"📝 {anzahl_woche_menues} Menüs → Generiere auf einmal (klein genug)")
-                    rezepte_prompt = get_rezepte_prompt(speiseplan_data)
-                    rezepte_data, error_rezepte, usage_rezepte = rufe_claude_api(rezepte_prompt, api_key, max_tokens=12000)
-
-                    if KOSTEN_TRACKING and cost_tracker and usage_rezepte:
-                        cost_tracker.add_usage(usage_rezepte)
             else:
-                rezepte_data = None
+                st.error(f"❌ Unerwartete Struktur für Woche {woche_nr}")
+                return None, None, None, f"Unerwartete Struktur bei Woche {woche_nr}", cost_tracker
 
-            if rezepte_data and 'rezepte' in rezepte_data:
+        # --------- Woche: Rezepte in sehr kleinen Gruppen + Coverage ---------
+        with st.spinner(f"📖 Rezepte für Woche {woche_nr}..."):
+            rezepte_data = {"rezepte": []}
+            woche_data = speiseplan_data['speiseplan']['wochen'][0]
+            alle_tage = woche_data.get('tage', [])
+            menues_pro_tag = menulinien
+
+            # Sehr kleine Gruppen (2 Tage) – extrem robust
+            tage_pro_gruppe = max(1, min(2, 15 // max(1, menues_pro_tag)))
+            anzahl_gruppen = (len(alle_tage) + tage_pro_gruppe - 1) // tage_pro_gruppe
+            st.info(f"🔄 Aufteilen in {anzahl_gruppen} Gruppen à {tage_pro_gruppe} Tag(e)")
+
+            for gruppe_nr in range(anzahl_gruppen):
+                start_idx = gruppe_nr * tage_pro_gruppe
+                end_idx = min((gruppe_nr + 1) * tage_pro_gruppe, len(alle_tage))
+                tage_gruppe = _tage_slicen(alle_tage, start_idx, end_idx)
+
+                gruppe_plan = {
+                    'speiseplan': {
+                        'wochen': [{'tage': tage_gruppe, 'woche': woche_nr}],
+                        'menuLinien': menulinien,
+                        'menuNamen': menu_namen
+                    }
+                }
+
+                expected_keys = _erwarte_rezept_schluessel(gruppe_plan)
+
+                with st.spinner(f"📖 Gruppe {gruppe_nr + 1}/{anzahl_gruppen} ({len(tage_gruppe)} Tag(e))…"):
+                    rezepte_prompt = get_rezepte_prompt(gruppe_plan)
+                    rezepte_data_gruppe, _, usage_gruppe = rufe_claude_api(
+                        rezepte_prompt, api_key, max_tokens=10000
+                    )
+
+                    if KOSTEN_TRACKING and cost_tracker and usage_gruppe:
+                        cost_tracker.add_usage(usage_gruppe)
+
+                    if rezepte_data_gruppe and 'rezepte' in rezepte_data_gruppe:
+                        rezepte_data['rezepte'].extend(rezepte_data_gruppe['rezepte'])
+
+                    # Coverage prüfen und fehlende gezielt nachziehen (max. 2 Versuche)
+                    missing = _delta_missing(expected_keys, rezepte_data)
+                    retry_round = 0
+                    while missing and retry_round < 2:
+                        st.warning(f"🧩 {len(missing)} fehlend – hole gezielt nach (Versuch {retry_round+1}/2)…")
+                        sub_plan = _baue_sub_speiseplan_aus_keys(gruppe_plan, missing)
+                        sub_prompt = get_rezepte_prompt(sub_plan)
+                        sub_res, _, usage_sub = rufe_claude_api(sub_prompt, api_key, max_tokens=9000)
+                        if KOSTEN_TRACKING and cost_tracker and usage_sub:
+                            cost_tracker.add_usage(usage_sub)
+                        if sub_res and 'rezepte' in sub_res:
+                            rezepte_data['rezepte'].extend(sub_res['rezepte'])
+                        missing = _delta_missing(expected_keys, rezepte_data)
+                        retry_round += 1
+
+                    if missing:
+                        st.error(f"❗Konnte {len(missing)} Rezept(e) dieser Gruppe nicht erzeugen.")
+                    else:
+                        st.success(f"✅ Gruppe {gruppe_nr + 1}: vollständig.")
+
+            # Woche speichern
+            if rezepte_data['rezepte']:
                 try:
                     gespeichert = DB.speichere_alle_rezepte(rezepte_data)
-                    st.success(f"✅ Woche {woche_nr}: {len(rezepte_data['rezepte'])} Rezepte")
+                    st.success(f"💾 Woche {woche_nr}: {len(rezepte_data['rezepte'])} Rezepte gespeichert")
                 except Exception as e:
-                    st.warning(f"⚠️ Rezepte Woche {woche_nr} nicht gespeichert: {e}")
-
+                    st.warning(f"⚠️ Woche {woche_nr} nicht gespeichert: {e}")
                 alle_rezepte.extend(rezepte_data['rezepte'])
             else:
                 st.warning(f"⚠️ Keine Rezepte für Woche {woche_nr}")
@@ -631,6 +686,7 @@ def generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_t
     }
     kombinierte_rezepte = {'rezepte': alle_rezepte}
 
+    # (Optional) Qualitätsprüfung
     pruefung_data = None
     with st.spinner("🔍 Qualitätsprüfung..."):
         try:
@@ -662,7 +718,7 @@ def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
 
     anzahl_menues = wochen * menulinien * 7  # Tage pro Woche
 
-    # === HARTE AUFTEILUNG AKTIVIEREN (stabil für 4 Wochen × 5 Linien) ===
+    # === HARTE AUFTEILUNG AKTIVIEREN (stabil für >1 Woche oder >3 Linien) ===
     if (anzahl_menues > SCHWELLWERT_AUFTEILUNG) or (wochen > 1) or (menulinien > 3):
         st.success(f"""
         ✅✅✅ AUTOMATISCHE AUFTEILUNG IST AKTIV! ✅✅✅
@@ -674,8 +730,8 @@ def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
 
         **✅ AUTOMATISCHE AUFTEILUNG WIRD AKTIVIERT:**
         - Plan wird wochenweise generiert
-        - Rezepte werden in Mini-Gruppen erstellt (max 15 Stück)
-        - Höchste Erfolgsrate (99%+)
+        - Rezepte werden in sehr kleinen Gruppen erstellt (max ~2 Tage)
+        - Fehlende Rezepte werden gezielt nachgeneriert
         """)
         st.info(f"🔧 **Version {VERSION}** - Schwellwert {SCHWELLWERT_AUFTEILUNG}")
         return generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_tracker)
@@ -691,8 +747,6 @@ def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
         rezepte_tokens = 32000
 
     with st.spinner(f"🔄 Speiseplan wird erstellt... ({anzahl_menues} Menüs)"):
-        if anzahl_menues > 100:
-            st.info("💡 Vereinfachter Modus (weniger Details) wäre möglich – aktuell nicht aktiviert.")
         prompt = get_speiseplan_prompt(wochen, menulinien, menu_namen)
         speiseplan_data, error, usage = rufe_claude_api(prompt, api_key, max_tokens=speiseplan_tokens)
 
