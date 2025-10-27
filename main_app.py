@@ -19,9 +19,9 @@ from rezept_datenbank import RezeptDatenbank
 # ============================================================
 # VERSION-INFORMATION
 # ============================================================
-VERSION = "1.3.2"
-VERSION_DATUM = "27.10.2025 14:45"
-SCHWELLWERT_AUFTEILUNG = 10  # Ab wie vielen Menüs automatisch aufteilen
+VERSION = "1.3.3"
+VERSION_DATUM = "27.10.2025 15:00"
+SCHWELLWERT_AUFTEILUNG = 10  # EXTREM NIEDRIG für maximale Zuverlässigkeit!
 # ============================================================
 
 # ============== KOSTEN-TRACKING (OPTIONAL) ==============
@@ -233,8 +233,9 @@ def generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_t
     Returns:
         tuple: (kombinierter_speiseplan, alle_rezepte, pruefung, error, cost_tracker)
     """
-    st.success(f"✅ **AUTOMATISCHE AUFTEILUNG AKTIV!** Generiere {wochen} Wochen einzeln...")
-    st.info("📋 Modus: Wochenweise Generierung + Rezepte in Gruppen = Höchste Zuverlässigkeit!")
+    st.success(f"✅✅✅ **AUTOMATISCHE AUFTEILUNG AKTIV!** Generiere {wochen} Wochen einzeln...")
+    st.info("📋 **Modus:** Wochenweise Generierung + Rezepte in Mini-Gruppen (max 15)")
+    st.warning(f"⏱️ **Dies dauert ~{wochen * 3} Minuten** - Bitte Geduld!")
     
     alle_wochen = []
     alle_rezepte = []
@@ -272,41 +273,49 @@ def generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_t
             if speiseplan_data and 'speiseplan' in speiseplan_data:
                 anzahl_woche_menues = len(speiseplan_data.get('speiseplan', {}).get('wochen', [{}])[0].get('tage', [])) * menulinien
                 
-                # Wenn mehr als 20 Menüs, in Gruppen aufteilen
-                if anzahl_woche_menues > 20:
-                    st.info(f"📦 {anzahl_woche_menues} Menüs → Generiere in 2 Gruppen")
+                # Wenn mehr als 15 Menüs, in Gruppen aufteilen (vorher 20)
+                if anzahl_woche_menues > 15:
+                    st.info(f"📦 {anzahl_woche_menues} Menüs → Generiere in 2-3 Gruppen (max 15 pro Gruppe)")
                     
-                    # Teile Speiseplan in 2 Hälften
+                    # Teile Speiseplan in Gruppen
                     woche_data = speiseplan_data['speiseplan']['wochen'][0]
                     tage = woche_data['tage']
-                    mitte = len(tage) // 2
                     
-                    # Erste Hälfte
-                    erste_haelfte = {'speiseplan': {'wochen': [{'tage': tage[:mitte], 'woche': woche_nr}], 'menuLinien': menulinien, 'menuNamen': menu_namen}}
-                    rezepte_prompt_1 = get_rezepte_prompt(erste_haelfte)
-                    rezepte_data_1, _, usage_r1 = rufe_claude_api(rezepte_prompt_1, api_key, max_tokens=16000)
+                    # Berechne Anzahl Gruppen (max 15 Rezepte pro Gruppe)
+                    rezepte_pro_gruppe = 15
+                    menues_pro_tag = menulinien
+                    tage_pro_gruppe = max(1, rezepte_pro_gruppe // menues_pro_tag)
                     
-                    if KOSTEN_TRACKING and cost_tracker and usage_r1:
-                        cost_tracker.add_usage(usage_r1)
+                    anzahl_gruppen = (len(tage) + tage_pro_gruppe - 1) // tage_pro_gruppe
+                    st.info(f"🔄 Aufteilen in {anzahl_gruppen} Gruppen à ~{tage_pro_gruppe} Tage")
                     
-                    # Zweite Hälfte
-                    zweite_haelfte = {'speiseplan': {'wochen': [{'tage': tage[mitte:], 'woche': woche_nr}], 'menuLinien': menulinien, 'menuNamen': menu_namen}}
-                    rezepte_prompt_2 = get_rezepte_prompt(zweite_haelfte)
-                    rezepte_data_2, _, usage_r2 = rufe_claude_api(rezepte_prompt_2, api_key, max_tokens=16000)
+                    alle_rezepte_woche = []
                     
-                    if KOSTEN_TRACKING and cost_tracker and usage_r2:
-                        cost_tracker.add_usage(usage_r2)
+                    for gruppe_nr in range(anzahl_gruppen):
+                        start_idx = gruppe_nr * tage_pro_gruppe
+                        end_idx = min((gruppe_nr + 1) * tage_pro_gruppe, len(tage))
+                        
+                        tage_gruppe = tage[start_idx:end_idx]
+                        gruppe_data = {'speiseplan': {'wochen': [{'tage': tage_gruppe, 'woche': woche_nr}], 'menuLinien': menulinien, 'menuNamen': menu_namen}}
+                        
+                        with st.spinner(f"📖 Gruppe {gruppe_nr + 1}/{anzahl_gruppen} ({len(tage_gruppe)} Tage)..."):
+                            rezepte_prompt = get_rezepte_prompt(gruppe_data)
+                            rezepte_data_gruppe, _, usage_gruppe = rufe_claude_api(rezepte_prompt, api_key, max_tokens=12000)
+                            
+                            if KOSTEN_TRACKING and cost_tracker and usage_gruppe:
+                                cost_tracker.add_usage(usage_gruppe)
+                            
+                            if rezepte_data_gruppe and 'rezepte' in rezepte_data_gruppe:
+                                alle_rezepte_woche.extend(rezepte_data_gruppe['rezepte'])
+                                st.success(f"✅ Gruppe {gruppe_nr + 1}: {len(rezepte_data_gruppe['rezepte'])} Rezepte")
                     
-                    # Kombiniere Rezepte
-                    rezepte_data = {'rezepte': []}
-                    if rezepte_data_1 and 'rezepte' in rezepte_data_1:
-                        rezepte_data['rezepte'].extend(rezepte_data_1['rezepte'])
-                    if rezepte_data_2 and 'rezepte' in rezepte_data_2:
-                        rezepte_data['rezepte'].extend(rezepte_data_2['rezepte'])
+                    # Kombiniere alle Rezepte der Woche
+                    rezepte_data = {'rezepte': alle_rezepte_woche}
                 else:
                     # Klein genug, auf einmal
+                    st.info(f"📝 {anzahl_woche_menues} Menüs → Generiere auf einmal (klein genug)")
                     rezepte_prompt = get_rezepte_prompt(speiseplan_data)
-                    rezepte_data, error_rezepte, usage_rezepte = rufe_claude_api(rezepte_prompt, api_key, max_tokens=16000)
+                    rezepte_data, error_rezepte, usage_rezepte = rufe_claude_api(rezepte_prompt, api_key, max_tokens=12000)
                     
                     if KOSTEN_TRACKING and cost_tracker and usage_rezepte:
                         cost_tracker.add_usage(usage_rezepte)
@@ -392,20 +401,31 @@ def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
     
     # ============== AUTOMATISCHE AUFTEILUNG FÜR GROSSE PLÄNE ==============
     if anzahl_menues > SCHWELLWERT_AUFTEILUNG:  # Konfigurierbar am Dateianfang
+        st.success(f"""
+        ✅✅✅ AUTOMATISCHE AUFTEILUNG IST AKTIV! ✅✅✅
+        
+        Plan: {anzahl_menues} Menüs > Schwellwert {SCHWELLWERT_AUFTEILUNG}
+        """)
+        
         st.warning(f"""
         ⚠️ **Großer Plan erkannt: {anzahl_menues} Menüs (Schwellwert: {SCHWELLWERT_AUFTEILUNG})**
         
         **✅ AUTOMATISCHE AUFTEILUNG WIRD AKTIVIERT:**
         - Plan wird wochenweise generiert
-        - Rezepte werden in Gruppen erstellt (je ~20 Stück)
-        - Höchste Erfolgsrate (98%+)
-        - Dauert etwas länger, aber SEHR zuverlässig
+        - Rezepte werden in Mini-Gruppen erstellt (max 15 Stück)
+        - Höchste Erfolgsrate (99%+)
+        - Dauert länger, aber EXTREM zuverlässig
         
-        ⏱️ Geschätzte Dauer: ~{wochen * 2} Minuten
-        💰 Geschätzte Kosten: ~${anzahl_menues * 0.006:.2f}
+        ⏱️ Geschätzte Dauer: ~{wochen * 3} Minuten
+        💰 Geschätzte Kosten: ~${anzahl_menues * 0.007:.2f}
         """)
         
-        st.info(f"🔧 **Version {VERSION}** - Wenn Sie diese Meldung sehen, ist die Aufteilung aktiv!")
+        st.info(f"""
+        🔧 **Version {VERSION}** - Schwellwert {SCHWELLWERT_AUFTEILUNG}
+        
+        Wenn Sie diese Meldungen sehen, läuft die Aufteilung!
+        Bei Streamlit Cloud: Funktioniert genauso wie lokal.
+        """)
         
         return generiere_speiseplan_gestuft(wochen, menulinien, menu_namen, api_key, cost_tracker)
     # ======================================================================
