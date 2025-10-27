@@ -1,111 +1,100 @@
+import json
+
 """
 Prompts für den Speiseplan-Generator
 Alle Prompt-Templates zentral verwaltet
 """
 
+# Einheitliche, klare Tool-Direktive – passt zu rufe_claude_api (tool_choice=return_json)
+TOOL_DIRECTIVE = (
+    "ANTWORTFORMAT: Antworte ausschließlich als Tool-Aufruf 'return_json'. "
+    "Gib das komplette Ergebnis als EIN JSON-Objekt im Feld 'input' zurück. "
+    "Kein Markdown, keine Erklärungen, keine Kommentare, keine Codeblöcke. "
+    "Kein Text vor oder nach dem JSON-Objekt."
+)
+
 def get_speiseplan_prompt(wochen, menulinien, menu_namen):
     """
     Erstellt den Prompt für die Speiseplan-Generierung
-    
-    Args:
-        wochen (int): Anzahl der Wochen (1-4)
-        menulinien (int): Anzahl der Menülinien (1-5)
-        menu_namen (list): Liste der Menülinienbeschreibungen
-        
-    Returns:
-        str: Formatierter Prompt
     """
     menu_liste = "\n".join([f"{i+1}. {name}" for i, name in enumerate(menu_namen)])
-    
-    return f"""Du bist ein diätisch ausgebildeter Küchenmeister mit über 25 Jahren Erfahrung in der Gemeinschaftsverpflegung, spezialisiert auf Krankenhaus- und Seniorenverpflegung.
 
-AUFGABE: Erstelle einen professionellen Speiseplan für {wochen} Woche(n) mit {menulinien} Menülinie(n).
+    # Kompaktes, eindeutiges Schema. Doppelklammern weil f-String.
+    schema = (
+        "{{\n"
+        "  \"speiseplan\": {{\n"
+        "    \"wochen\": [\n"
+        "      {{\n"
+        "        \"woche\": 1,\n"
+        "        \"tage\": [\n"
+        "          {{\n"
+        "            \"tag\": \"Montag\",\n"
+        "            \"menues\": [\n"
+        "              {{\n"
+        "                \"menuName\": \"Name der Menülinie\",\n"
+        "                \"fruehstueck\": {{\n"
+        "                  \"hauptgericht\": \"Gericht\",\n"
+        "                  \"beilagen\": [\"Beilage 1\", \"Beilage 2\"],\n"
+        "                  \"getraenk\": \"Getränk\"\n"
+        "                }},\n"
+        "                \"mittagessen\": {{\n"
+        "                  \"vorspeise\": \"Suppe/Vorspeise\",\n"
+        "                  \"hauptgericht\": \"Hauptgericht\",\n"
+        "                  \"beilagen\": [\n"
+        "                    \"Beilage 1 (z.B. Kartoffeln)\",\n"
+        "                    \"Beilage 2 (z.B. Gemüse)\",\n"
+        "                    \"Beilage 3 (z.B. Salat)\"\n"
+        "                  ],\n"
+        "                  \"nachspeise\": \"Dessert\",\n"
+        "                  \"naehrwerte\": {{\n"
+        "                    \"kalorien\": \"ca. X kcal\",\n"
+        "                    \"protein\": \"X g\"\n"
+        "                  }},\n"
+        "                  \"allergene\": [\"Liste der Allergene\"]\n"
+        "                }},\n"
+        "                \"zwischenmahlzeit\": \"Obst/Joghurt/etc.\",\n"
+        "                \"abendessen\": {{\n"
+        "                  \"hauptgericht\": \"Gericht\",\n"
+        "                  \"beilagen\": [\"Beilage 1\", \"Beilage 2\"],\n"
+        "                  \"getraenk\": \"Getränk\"\n"
+        "                }}\n"
+        "              }}\n"
+        "            ]\n"
+        "          }}\n"
+        "        ]\n"
+        "      }}\n"
+        "    ],\n"
+        "    \"menuLinien\": " + str(menulinien) + ",\n"
+        "    \"menuNamen\": " + json.dumps(menu_namen, ensure_ascii=False) + "\n"
+        "  }}\n"
+        "}}"
+    )
 
-MENÜLINIEN:
-{menu_liste}
-
-WICHTIGE VORGABEN:
-- Seniorengerechte Kost: leicht verdaulich, weiche Konsistenzen wo nötig
-- Nährstoffdichte Gerichte (wichtig bei oft verringertem Appetit)
-- Abwechslungsreich und ausgewogen
-- IMMER mindestens 2-3 Beilagen zum Mittagessen (z.B. Kartoffeln/Reis/Nudeln UND Gemüse/Salat)
-- Saisonale und regionale Produkte bevorzugen
-- Klare Portionsangaben für Gemeinschaftsverpflegung (pro Person)
-- Allergenkennzeichnung
-- Pro Tag: Frühstück, Mittagessen (MIT BEILAGEN!), Abendessen + Zwischenmahlzeit
-
-ERNÄHRUNGSPHYSIOLOGISCHE ANFORDERUNGEN:
-- Ausreichend Protein (1,0-1,2g/kg Körpergewicht)
-- Ballaststoffreich aber gut verträglich
-- Calciumreich für Knochengesundheit
-- Vitamin D Quellen einbauen
-- Flüssigkeitsreiche Gerichte (Suppen, Eintöpfe)
-- Reduzierter Salzgehalt, aber schmackhaft gewürzt
-
-WICHTIG: JEDES Mittagessen MUSS mindestens 2-3 Beilagen haben!
-Beispiele für gute Beilagenkombinationen:
-- Salzkartoffeln, Buttergemüse, gemischter Salat
-- Reis, Ratatouille, Gurkensalat
-- Spätzle, Rotkohl, grüner Salat
-- Kartoffelpüree, Erbsen-Möhren-Gemüse, Tomatensalat
-
-STRUKTUR DER ANTWORT (JSON):
-{{
-  "speiseplan": {{
-    "wochen": [
-      {{
-        "woche": 1,
-        "tage": [
-          {{
-            "tag": "Montag",
-            "menues": [
-              {{
-                "menuName": "Name der Menülinie",
-                "fruehstueck": {{
-                  "hauptgericht": "Gericht",
-                  "beilagen": ["Beilage 1", "Beilage 2"],
-                  "getraenk": "Getränk"
-                }},
-                "mittagessen": {{
-                  "vorspeise": "Suppe/Vorspeise",
-                  "hauptgericht": "Hauptgericht",
-                  "beilagen": ["Beilage 1 (z.B. Kartoffeln)", "Beilage 2 (z.B. Gemüse)", "Beilage 3 (z.B. Salat)"],
-                  "nachspeise": "Dessert",
-                  "naehrwerte": {{
-                    "kalorien": "ca. X kcal",
-                    "protein": "X g"
-                  }},
-                  "allergene": ["Liste der Allergene"]
-                }},
-                "zwischenmahlzeit": "Obst/Joghurt/etc.",
-                "abendessen": {{
-                  "hauptgericht": "Gericht",
-                  "beilagen": ["Beilage 1", "Beilage 2"],
-                  "getraenk": "Getränk"
-                }}
-              }}
-            ]
-          }}
-        ]
-      }}
-    ]
-  }}
-}}
-
-WICHTIG: Antworte NUR mit validem JSON. Keine Markdown-Formatierung, keine Backticks.
-STARTE MIT {{ UND ENDE MIT }}
-KEIN TEXT DAVOR ODER DANACH!"""
+    return (
+        f"Du bist ein diätisch ausgebildeter Küchenmeister mit 25+ Jahren Erfahrung in der "
+        f"Gemeinschaftsverpflegung (Krankenhaus/Senioren). {TOOL_DIRECTIVE}\n\n"
+        f"AUFGABE: Erstelle einen professionellen Speiseplan für {wochen} Woche(n) mit {menulinien} Menülinie(n).\n\n"
+        f"MENÜLINIEN:\n{menu_liste}\n\n"
+        "VORGABEN:\n"
+        "- Seniorengerechte Kost, gut verträglich, ggf. weichere Konsistenzen\n"
+        "- Hohe Nährstoffdichte; Protein ca. 1,0–1,2 g/kg; Ballaststoffe gut verträglich\n"
+        "- Saisonale/regionale Produkte bevorzugt; reduzierte Salzmenge, dennoch schmackhaft\n"
+        "- Pro Tag: Frühstück, Mittagessen (mit 2–3 Beilagen), Abendessen, Zwischenmahlzeit\n"
+        "- Klare Portions-/Nährwertangaben zum Mittag; Allergenkennzeichnung\n\n"
+        "BEILAGENBEISPIELE:\n"
+        "- Salzkartoffeln, Buttergemüse, gemischter Salat\n"
+        "- Reis, Ratatouille, Gurkensalat\n"
+        "- Spätzle, Rotkohl, grüner Salat\n"
+        "- Kartoffelpüree, Erbsen-Möhren-Gemüse, Tomatensalat\n\n"
+        "ANTWORT-SCHEMA (JSON-OBJEKT):\n"
+        f"{schema}\n"
+        "HINWEIS: Gib die realen Inhalte vollständig zurück; das Schema ist nur die Struktur."
+    )
 
 
 def get_rezepte_prompt(speiseplan):
     """
     Erstellt den Prompt für die Rezept-Generierung
-    
-    Args:
-        speiseplan (dict): Der generierte Speiseplan
-        
-    Returns:
-        str: Formatierter Prompt
     """
     alle_gerichte = []
     for woche in speiseplan['speiseplan']['wochen']:
@@ -121,138 +110,111 @@ def get_rezepte_prompt(speiseplan):
                     'tag': tag['tag'],
                     'menu': menu['menuName']
                 })
-    
+
     gerichte_liste = "\n".join([
-        f"{i+1}. {g['gericht']} mit {g['beilagen_text']}" 
+        f"{i+1}. {g['gericht']} mit {g['beilagen_text']}  |  Woche {g['woche']}  |  {g['tag']}  |  {g['menu']}"
         for i, g in enumerate(alle_gerichte)
     ])
-    
     anzahl_gerichte = len(alle_gerichte)
-    
-    return f"""Du bist ein erfahrener Küchenmeister für Gemeinschaftsverpflegung.
 
-AUFGABE: Erstelle {anzahl_gerichte} detaillierte Rezepte für folgende Gerichte:
+    schema = (
+        "{{\n"
+        "  \"rezepte\": [\n"
+        "    {{\n"
+        "      \"name\": \"Gerichtname mit allen Beilagen\",\n"
+        "      \"woche\": 1,\n"
+        "      \"tag\": \"Montag\",\n"
+        "      \"menu\": \"Menüname\",\n"
+        "      \"portionen\": 10,\n"
+        "      \"zeiten\": {{\n"
+        "        \"vorbereitung\": \"X Minuten\",\n"
+        "        \"garzeit\": \"X Minuten\",\n"
+        "        \"gesamt\": \"X Minuten\"\n"
+        "      }},\n"
+        "      \"zutaten\": [\n"
+        "        {{ \"name\": \"Zutat\", \"menge\": \"X g/ml\", \"hinweis\": \"Optional\" }}\n"
+        "      ],\n"
+        "      \"zubereitung\": [\n"
+        "        \"Schritt 1 ausführlich\",\n"
+        "        \"Schritt 2 ausführlich\",\n"
+        "        \"Schritt 3 ausführlich\"\n"
+        "      ],\n"
+        "      \"naehrwerte\": {{\n"
+        "        \"kalorien\": \"X kcal\",\n"
+        "        \"protein\": \"X g\",\n"
+        "        \"fett\": \"X g\",\n"
+        "        \"kohlenhydrate\": \"X g\",\n"
+        "        \"ballaststoffe\": \"X g\"\n"
+        "      }},\n"
+        "      \"allergene\": [\"Allergen1\", \"Allergen2\"],\n"
+        "      \"tipps\": [\"Tipp 1\", \"Tipp 2\"],\n"
+        "      \"variationen\": {{\n"
+        "        \"pueriert\": \"Anleitung für pürierte Kost\",\n"
+        "        \"leichteKost\": \"Anpassung für leichte Vollkost\"\n"
+        "      }}\n"
+        "    }}\n"
+        "  ]\n"
+        "}}"
+    )
 
-{gerichte_liste}
-
-WICHTIG:
-- Jedes Rezept MUSS das Hauptgericht UND ALLE Beilagen enthalten
-- Portionsangaben für 10 Personen
-- Genaue Mengenangaben in Gramm/Liter
-- Zubereitungsschritte für ALLE Komponenten
-- Nährwertangaben pro Portion
-- Allergenkennzeichnung
-
-JSON-FORMAT (GENAU SO):
-{{
-  "rezepte": [
-    {{
-      "name": "Gerichtname mit allen Beilagen",
-      "woche": 1,
-      "tag": "Montag",
-      "menu": "Menüname",
-      "portionen": 10,
-      "zeiten": {{
-        "vorbereitung": "X Minuten",
-        "garzeit": "X Minuten",
-        "gesamt": "X Minuten"
-      }},
-      "zutaten": [
-        {{
-          "name": "Zutat",
-          "menge": "X g/ml",
-          "hinweis": "Optional: für welche Komponente"
-        }}
-      ],
-      "zubereitung": [
-        "Schritt 1 ausführlich",
-        "Schritt 2 ausführlich",
-        "Schritt 3 ausführlich"
-      ],
-      "naehrwerte": {{
-        "kalorien": "X kcal",
-        "protein": "X g",
-        "fett": "X g",
-        "kohlenhydrate": "X g",
-        "ballaststoffe": "X g"
-      }},
-      "allergene": ["Allergen1", "Allergen2"],
-      "tipps": [
-        "Tipp für Großküche 1",
-        "Tipp für Großküche 2"
-      ],
-      "variationen": {{
-        "pueriert": "Anleitung für pürierte Kost",
-        "leichteKost": "Anpassung für leichte Vollkost"
-      }}
-    }}
-  ]
-}}
-
-KRITISCH WICHTIG:
-- Antworte NUR mit diesem JSON
-- KEIN Text vor oder nach dem JSON
-- KEINE Markdown-Formatierung
-- KEINE Backticks
-- Starte direkt mit {{ und ende mit }}
-- Erstelle ein Rezept für JEDES der {anzahl_gerichte} Gerichte oben"""
+    return (
+        f"Du bist ein Küchenmeister für Gemeinschaftsverpflegung. {TOOL_DIRECTIVE}\n\n"
+        f"AUFGABE: Erstelle {anzahl_gerichte} detaillierte Rezepte für folgende Gerichte:\n\n"
+        f"{gerichte_liste}\n\n"
+        "ANFORDERUNGEN:\n"
+        "- Jedes Rezept umfasst Hauptgericht UND alle Beilagen\n"
+        "- Portionsangaben für 10 Personen; Mengen in g/ml\n"
+        "- Zubereitungsschritte für alle Komponenten\n"
+        "- Nährwerte pro Portion; Allergenkennzeichnung\n\n"
+        "ANTWORT-SCHEMA (JSON-OBJEKT):\n"
+        f"{schema}\n"
+        "HINWEIS: Gib die realen Inhalte vollständig zurück; das Schema ist nur die Struktur."
+    )
 
 
 def get_pruefung_prompt(speiseplan):
     """
     Erstellt den Prompt für die Qualitätsprüfung
-    
-    Args:
-        speiseplan (dict): Der zu prüfende Speiseplan
-        
-    Returns:
-        str: Formatierter Prompt
     """
-    return f"""Du bist ein erfahrener diätisch ausgebildeter Küchenmeister mit Spezialisierung auf Seniorenheime, Krankenhäuser und Gemeinschaftsverpflegung. Du hast über 30 Jahre Erfahrung.
+    plan_json = json.dumps(speiseplan, ensure_ascii=False)
 
-AUFGABE: Prüfe den folgenden Speiseplan auf:
-1. Ernährungsphysiologische Ausgewogenheit
-2. Seniorengerechte Zusammenstellung
-3. Praktikabilität in der Gemeinschaftsverpflegung
-4. Abwechslung und Attraktivität
-5. Nährstoffdichte und -verteilung
-6. Verträglichkeit und Konsistenz
-7. Einhaltung von DGE-Richtlinien für Seniorenernährung
-8. WICHTIG: Sind ausreichend Beilagen vorhanden?
+    schema = (
+        "{{\n"
+        "  \"gesamtbewertung\": \"sehr gut | gut | zufriedenstellend | verbesserungswürdig\",\n"
+        "  \"punktzahl\": \"X/10\",\n"
+        "  \"positiveAspekte\": [\"Aspekt 1\", \"Aspekt 2\"],\n"
+        "  \"verbesserungsvorschlaege\": [\n"
+        "    {{\n"
+        "      \"bereich\": \"z.B. Woche 1, Tag 2, Menü 1\",\n"
+        "      \"problem\": \"Beschreibung\",\n"
+        "      \"empfehlung\": \"Konkrete Verbesserung\"\n"
+        "    }}\n"
+        "  ],\n"
+        "  \"naehrstoffanalyse\": {{\n"
+        "    \"protein\": \"Bewertung\",\n"
+        "    \"vitamine\": \"Bewertung\",\n"
+        "    \"mineralstoffe\": \"Bewertung\",\n"
+        "    \"ballaststoffe\": \"Bewertung\"\n"
+        "  }},\n"
+        "  \"praxistauglichkeit\": {{\n"
+        "    \"kuechentechnisch\": \"Bewertung\",\n"
+        "    \"wirtschaftlichkeit\": \"Bewertung\",\n"
+        "    \"personalaufwand\": \"Bewertung\"\n"
+        "  }},\n"
+        "  \"fazit\": \"2–3 Sätze Gesamtempfehlung\"\n"
+        "}}"
+    )
 
-SPEISEPLAN ZU PRÜFEN:
-{json.dumps(speiseplan, ensure_ascii=False, indent=2)}
-
-ANTWORTFORMAT (JSON):
-{{
-  "gesamtbewertung": "sehr gut / gut / zufriedenstellend / verbesserungswürdig",
-  "punktzahl": "X/10",
-  "positiveAspekte": [
-    "Aspekt 1",
-    "Aspekt 2",
-    "Aspekt 3"
-  ],
-  "verbesserungsvorschlaege": [
-    {{
-      "bereich": "z.B. Woche 1, Tag 2, Menü 1",
-      "problem": "Beschreibung des Problems",
-      "empfehlung": "Konkrete Verbesserungsempfehlung"
-    }}
-  ],
-  "naehrstoffanalyse": {{
-    "protein": "Bewertung der Proteinversorgung",
-    "vitamine": "Bewertung Vitaminversorgung",
-    "mineralstoffe": "Bewertung Mineralstoffversorgung",
-    "ballaststoffe": "Bewertung Ballaststoffversorgung"
-  }},
-  "praxistauglichkeit": {{
-    "kuechentechnisch": "Bewertung der küchentechnischen Umsetzbarkeit",
-    "wirtschaftlichkeit": "Bewertung der Wirtschaftlichkeit",
-    "personalaufwand": "Bewertung des Personalaufwands"
-  }},
-  "fazit": "Zusammenfassende Bewertung und Gesamtempfehlung (2-3 Sätze)"
-}}
-
-NUR JSON! KEIN ANDERER TEXT!"""
-
-import json
+    return (
+        f"Du bist ein diätisch ausgebildeter Küchenmeister (30+ Jahre) für Senioren/ Krankenhaus/ GV. "
+        f"{TOOL_DIRECTIVE}\n\n"
+        "AUFGABE: Prüfe den folgenden Speiseplan auf\n"
+        "1) ernährungsphysiologische Ausgewogenheit, 2) Seniorengerechtigkeit, 3) Praktikabilität, "
+        "4) Abwechslung/Attraktivität, 5) Nährstoffdichte/-verteilung, 6) Verträglichkeit/Konsistenz, "
+        "7) DGE-Konformität, 8) ausreichende Beilagen.\n\n"
+        "SPEISEPLAN (JSON):\n"
+        f"{plan_json}\n\n"
+        "ANTWORT-SCHEMA (JSON-OBJEKT):\n"
+        f"{schema}\n"
+        "HINWEIS: Nur strukturierte Bewertung nach Schema zurückgeben."
+    )
