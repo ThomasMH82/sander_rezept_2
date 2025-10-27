@@ -11,12 +11,23 @@ import re
 # Import der eigenen Module
 from prompts import get_speiseplan_prompt, get_rezepte_prompt, get_pruefung_prompt
 from pdf_generator import erstelle_speiseplan_pdf, erstelle_rezept_pdf, erstelle_alle_rezepte_pdf
+from rezept_datenbank import RezeptDatenbank
 
 # ============== KOSTEN-TRACKING (OPTIONAL) ==============
 # Um Kosten-Tracking zu deaktivieren, kommentieren Sie die folgenden 2 Zeilen aus:
 from cost_tracker import CostTracker, zeige_kosten_anzeige, zeige_kosten_warnung_bei_grossen_plaenen, zeige_kosten_in_sidebar, KOSTEN_TRACKING_AKTIVIERT
 KOSTEN_TRACKING = KOSTEN_TRACKING_AKTIVIERT()
 # ========================================================
+
+# ============== REZEPT-DATENBANK INITIALISIEREN ==============
+# Erstelle Datenbank-Instanz
+@st.cache_resource
+def hole_datenbank():
+    """Holt eine gecachte Instanz der Rezept-Datenbank"""
+    return RezeptDatenbank()
+
+DB = hole_datenbank()
+# =============================================================
 
 
 # ==================== KONFIGURATION ====================
@@ -79,7 +90,7 @@ def rufe_claude_api(prompt, api_key, max_tokens=20000):
                 "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": prompt}]
             },
-            timeout=120  # 2 Minuten Timeout
+            timeout=180  # 3 Minuten Timeout für große Anfragen
         )
         
         if response.status_code != 200:
@@ -94,19 +105,47 @@ def rufe_claude_api(prompt, api_key, max_tokens=20000):
         data = response.json()
         response_text = data['content'][0]['text']
         
+        # Speichere rohe Antwort für Debug
+        if 'debug_raw_responses' not in st.session_state:
+            st.session_state['debug_raw_responses'] = []
+        st.session_state['debug_raw_responses'].append({
+            'length': len(response_text),
+            'preview': response_text[:200] + '...' if len(response_text) > 200 else response_text
+        })
+        
         # JSON bereinigen und parsen
         cleaned_text = bereinige_json_response(response_text)
-        parsed_data = json.loads(cleaned_text)
+        
+        try:
+            parsed_data = json.loads(cleaned_text)
+        except json.JSONDecodeError as e:
+            # Bei JSON-Fehler: Zeige mehr Details
+            error_msg = f"JSON-Parsing-Fehler: {str(e)}\n"
+            error_msg += f"Antwort-Länge: {len(response_text)} Zeichen\n"
+            error_msg += f"Bereinigte Länge: {len(cleaned_text)} Zeichen\n"
+            
+            # Zeige Bereich um den Fehler
+            if hasattr(e, 'pos'):
+                start = max(0, e.pos - 100)
+                end = min(len(cleaned_text), e.pos + 100)
+                error_msg += f"\nBereich um Fehler:\n...{cleaned_text[start:end]}...\n"
+            
+            # Speichere für Debug
+            st.session_state['last_json_error'] = {
+                'error': str(e),
+                'raw_length': len(response_text),
+                'cleaned_text': cleaned_text[:1000]  # Erste 1000 Zeichen
+            }
+            
+            return None, error_msg, None
         
         # Usage-Daten extrahieren (für Kosten-Tracking)
         usage_data = data.get('usage', {})
         
         return parsed_data, None, usage_data
         
-    except json.JSONDecodeError as e:
-        return None, f"JSON-Parsing-Fehler: {str(e)} - Überprüfen Sie die API-Antwort", None
     except requests.exceptions.Timeout:
-        return None, "Timeout: Die API-Anfrage hat zu lange gedauert. Bitte versuchen Sie es erneut.", None
+        return None, "Timeout: Die API-Anfrage hat zu lange gedauert (>3min). Reduzieren Sie die Anzahl Wochen/Menülinien.", None
     except requests.exceptions.RequestException as e:
         return None, f"Netzwerkfehler: {str(e)}", None
     except Exception as e:
@@ -132,10 +171,41 @@ def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
         cost_tracker = CostTracker()
     # ============================================================
     
+    # Berechne Komplexität
+    anzahl_menues = wochen * menulinien * 7  # Tage pro Woche
+    
+    # Warnung bei sehr großen Plänen
+    if anzahl_menues > 100:
+        st.warning(f"""
+        ⚠️ **Großer Speiseplan**
+        
+        Sie erstellen {anzahl_menues} Menüs ({wochen} Wochen × {menulinien} Linien × 7 Tage).
+        
+        Dies kann:
+        - Mehrere Minuten dauern
+        - Höhere API-Kosten verursachen (~${0.005 * anzahl_menues:.2f})
+        - Zu sehr langen Antworten führen
+        
+        **Empfehlung:** Für Tests starten Sie mit weniger Wochen/Linien (z.B. 1 Woche, 2 Linien).
+        """)
+    
+    # Dynamische max_tokens basierend auf Größe
+    # Claude Sonnet 4 Maximum ist 8192 Output-Tokens
+    if anzahl_menues <= 30:
+        speiseplan_tokens = 16000
+        rezepte_tokens = 16000
+    elif anzahl_menues <= 70:
+        speiseplan_tokens = 32000  # Für größere Pläne
+        rezepte_tokens = 32000
+    else:
+        speiseplan_tokens = 64000  # Maximum für sehr große Pläne
+        rezepte_tokens = 64000
+        st.info(f"💡 Verwende erweiterte Token-Limits ({speiseplan_tokens}) für großen Plan...")
+    
     # Schritt 1: Speiseplan erstellen
-    with st.spinner("🔄 Speiseplan wird erstellt..."):
+    with st.spinner(f"🔄 Speiseplan wird erstellt... ({anzahl_menues} Menüs, kann 1-3 Minuten dauern)"):
         prompt = get_speiseplan_prompt(wochen, menulinien, menu_namen)
-        speiseplan_data, error, usage = rufe_claude_api(prompt, api_key, max_tokens=20000)
+        speiseplan_data, error, usage = rufe_claude_api(prompt, api_key, max_tokens=speiseplan_tokens)
         
         # ============== KOSTEN-TRACKING ==============
         if KOSTEN_TRACKING and cost_tracker and usage:
@@ -143,6 +213,15 @@ def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
         # =============================================
         
         if error:
+            st.error(f"❌ Fehler beim Erstellen des Speiseplans:")
+            st.error(error)
+            
+            # Zeige Debug-Infos bei JSON-Fehler
+            if 'last_json_error' in st.session_state:
+                with st.expander("🐛 Debug-Informationen zum Fehler"):
+                    st.json(st.session_state['last_json_error'])
+                    st.write("**Tipp:** Aktivieren Sie Debug-Modus in der Sidebar für mehr Details")
+            
             return None, None, None, f"Fehler beim Erstellen des Speiseplans: {error}", cost_tracker
     
     # Schritt 2: Qualitätsprüfung (optional, kann auch parallel laufen)
@@ -161,9 +240,9 @@ def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
             pruefung_data = None
     
     # Schritt 3: Rezepte erstellen
-    with st.spinner("📖 Detaillierte Rezepte werden erstellt..."):
+    with st.spinner(f"📖 Detaillierte Rezepte werden erstellt... (kann 1-2 Minuten dauern)"):
         rezepte_prompt = get_rezepte_prompt(speiseplan_data)
-        rezepte_data, error_rezepte, usage_rezepte = rufe_claude_api(rezepte_prompt, api_key, max_tokens=20000)
+        rezepte_data, error_rezepte, usage_rezepte = rufe_claude_api(rezepte_prompt, api_key, max_tokens=rezepte_tokens)
         
         # ============== KOSTEN-TRACKING ==============
         if KOSTEN_TRACKING and cost_tracker and usage_rezepte:
@@ -171,8 +250,33 @@ def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
         # =============================================
         
         if error_rezepte:
-            st.warning(f"⚠️ Rezepte konnten nicht erstellt werden: {error_rezepte}")
+            st.error(f"❌ Fehler bei Rezept-Generierung: {error_rezepte}")
+            
+            # Zeige Debug-Infos
+            if 'last_json_error' in st.session_state:
+                with st.expander("🐛 Debug-Informationen zum Rezept-Fehler"):
+                    st.json(st.session_state['last_json_error'])
+            
             rezepte_data = None
+        elif not rezepte_data:
+            st.warning("⚠️ Keine Rezepte erhalten - prüfen Sie die API-Antwort")
+            rezepte_data = None
+        else:
+            # Debug: Überprüfe Struktur
+            if isinstance(rezepte_data, dict) and 'rezepte' in rezepte_data:
+                anzahl = len(rezepte_data['rezepte'])
+                st.success(f"✅ {anzahl} Rezepte erstellt!")
+                
+                # ============== AUTOMATISCHES SPEICHERN IN DATENBANK ==============
+                try:
+                    gespeichert = DB.speichere_alle_rezepte(rezepte_data)
+                    if gespeichert > 0:
+                        st.info(f"💾 {gespeichert} Rezepte in Bibliothek gespeichert!")
+                except Exception as e:
+                    st.warning(f"⚠️ Rezepte konnten nicht gespeichert werden: {e}")
+                # ==================================================================
+            else:
+                st.warning(f"⚠️ Unerwartete Rezept-Struktur: {type(rezepte_data)}")
     
     return speiseplan_data, rezepte_data, pruefung_data, None, cost_tracker
 
@@ -263,6 +367,14 @@ def zeige_sidebar():
             zeige_kosten_in_sidebar(st.session_state['cost_tracker'])
         # ==========================================================
         
+        # ============== DEBUG-MODUS (ZUM TESTEN) ==============
+        # Kommentieren Sie die folgenden Zeilen aus, wenn nicht benötigt:
+        st.sidebar.divider()
+        if st.sidebar.checkbox("🐛 Debug-Modus", value=False):
+            from debug_tool import zeige_debug_info
+            zeige_debug_info()
+        # ======================================================
+        
         return api_key, wochen, menulinien, menu_namen, button_clicked
 
 
@@ -279,14 +391,18 @@ def zeige_speiseplan_tab(speiseplan, pruefung=None):
     # PDF-Export Button
     col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
-        pdf_buffer = erstelle_speiseplan_pdf(speiseplan)
-        st.download_button(
-            label="📄 Speiseplan als PDF (DIN A4 quer)",
-            data=pdf_buffer,
-            file_name="Speiseplan.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
+        try:
+            pdf_buffer = erstelle_speiseplan_pdf(speiseplan)
+            st.download_button(
+                label="📄 Speiseplan als PDF (DIN A4 quer)",
+                data=pdf_buffer,
+                file_name="Speiseplan.pdf",
+                mime="application/pdf",
+                use_container_width=True
+            )
+        except Exception as e:
+            st.error(f"PDF-Erstellung fehlgeschlagen: {e}")
+            st.info("Versuchen Sie es erneut oder laden Sie die Seite neu.")
     
     st.divider()
     
@@ -372,14 +488,18 @@ def zeige_rezepte_tab(rezepte_data):
         return
     
     # Alle Rezepte PDF-Export
-    alle_rezepte_pdf = erstelle_alle_rezepte_pdf(rezepte_data)
-    st.download_button(
-        label="📚 Alle Rezepte als PDF herunterladen",
-        data=alle_rezepte_pdf,
-        file_name="Alle_Rezepte.pdf",
-        mime="application/pdf",
-        use_container_width=True
-    )
+    try:
+        alle_rezepte_pdf = erstelle_alle_rezepte_pdf(rezepte_data)
+        st.download_button(
+            label="📚 Alle Rezepte als PDF herunterladen",
+            data=alle_rezepte_pdf,
+            file_name="Alle_Rezepte.pdf",
+            mime="application/pdf",
+            use_container_width=True
+        )
+    except Exception as e:
+        st.error(f"PDF-Erstellung fehlgeschlagen: {e}")
+        st.info("Einzelne Rezepte können weiter unten heruntergeladen werden.")
     
     st.divider()
     
@@ -395,15 +515,19 @@ def zeige_rezepte_tab(rezepte_data):
             
             # PDF-Download
             with col2:
-                rezept_pdf = erstelle_rezept_pdf(rezept)
-                st.download_button(
-                    label="📄 Als PDF",
-                    data=rezept_pdf,
-                    file_name=f"Rezept_{rezept['name'].replace(' ', '_').replace('/', '_')}.pdf",
-                    mime="application/pdf",
-                    key=f"pdf_{rezept['name']}",
-                    use_container_width=True
-                )
+                try:
+                    rezept_pdf = erstelle_rezept_pdf(rezept)
+                    st.download_button(
+                        label="📄 Als PDF",
+                        data=rezept_pdf,
+                        file_name=f"Rezept_{rezept['name'].replace(' ', '_').replace('/', '_')}.pdf",
+                        mime="application/pdf",
+                        key=f"pdf_{rezept['name']}",
+                        use_container_width=True
+                    )
+                except Exception as e:
+                    st.error(f"PDF-Fehler: {str(e)[:50]}...")
+                    st.caption("Bitte Seite neu laden")
             
             # Zutaten
             st.markdown("### 🥘 Zutaten")
@@ -448,6 +572,204 @@ def zeige_rezepte_tab(rezepte_data):
                     st.write(f"**Pürierte Kost:** {rezept['variationen']['pueriert']}")
                 if rezept['variationen'].get('leichteKost'):
                     st.write(f"**Leichte Kost:** {rezept['variationen']['leichteKost']}")
+
+
+def zeige_bibliothek_tab():
+    """
+    Zeigt den Bibliotheks-Tab mit gespeicherten Rezepten
+    """
+    st.header("📚 Rezept-Bibliothek")
+    st.markdown("*Ihre Sammlung generierter Rezepte*")
+    
+    # Statistiken
+    stats = DB.hole_statistiken()
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("📖 Rezepte", stats['anzahl_rezepte'])
+    with col2:
+        if stats['meistverwendet']:
+            st.metric("🌟 Meistverwendet", stats['meistverwendet'][0][1])
+        else:
+            st.metric("🌟 Meistverwendet", 0)
+    with col3:
+        st.metric("🏷️ Tags", len(stats['tags']))
+    with col4:
+        if stats['bestbewertet']:
+            st.metric("⭐ Beste Bewertung", stats['bestbewertet'][0][1])
+        else:
+            st.metric("⭐ Beste Bewertung", "-")
+    
+    st.divider()
+    
+    # Suche und Filter
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        suchbegriff = st.text_input("🔍 Suche nach Name oder Zutat", placeholder="z.B. Schweinebraten, Kartoffeln...")
+    
+    with col2:
+        if stats['tags']:
+            ausgewaehlte_tags = st.multiselect("🏷️ Filter nach Tags", options=list(stats['tags'].keys()))
+        else:
+            ausgewaehlte_tags = []
+            st.info("Keine Tags verfügbar")
+    
+    with col3:
+        sortierung = st.selectbox("📊 Sortierung", 
+            ["Meistverwendet", "Neueste", "Name A-Z", "Beste Bewertung"])
+    
+    # Suche durchführen
+    rezepte = DB.suche_rezepte(suchbegriff=suchbegriff, tags=ausgewaehlte_tags)
+    
+    # Sortierung anwenden
+    if sortierung == "Name A-Z":
+        rezepte = sorted(rezepte, key=lambda x: x['name'])
+    elif sortierung == "Neueste":
+        rezepte = sorted(rezepte, key=lambda x: x['erstellt_am'], reverse=True)
+    elif sortierung == "Beste Bewertung":
+        rezepte = sorted(rezepte, key=lambda x: x['bewertung'], reverse=True)
+    # "Meistverwendet" ist schon Standard-Sortierung
+    
+    st.write(f"**{len(rezepte)} Rezepte gefunden**")
+    
+    # Export/Import
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("💾 Alle exportieren (JSON)"):
+            try:
+                dateiname = DB.exportiere_als_json()
+                with open(dateiname, 'rb') as f:
+                    st.download_button(
+                        label="📥 JSON herunterladen",
+                        data=f,
+                        file_name=dateiname,
+                        mime="application/json"
+                    )
+                st.success(f"✅ {stats['anzahl_rezepte']} Rezepte exportiert!")
+            except Exception as e:
+                st.error(f"Export fehlgeschlagen: {e}")
+    
+    with col2:
+        uploaded_file = st.file_uploader("📤 JSON importieren", type=['json'])
+        if uploaded_file:
+            try:
+                # Speichere temporär
+                with open("temp_import.json", "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                
+                count = DB.importiere_aus_json("temp_import.json")
+                st.success(f"✅ {count} Rezepte importiert!")
+                
+                import os
+                os.remove("temp_import.json")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Import fehlgeschlagen: {e}")
+    
+    with col3:
+        if st.button("🗑️ Bibliothek leeren", type="secondary"):
+            if st.session_state.get('bestaetigung_loeschen'):
+                # Hier würde DB gelöscht - nicht implementiert für Sicherheit
+                st.warning("⚠️ Funktion deaktiviert. Löschen Sie die Datei 'rezepte_bibliothek.db' manuell.")
+                st.session_state['bestaetigung_loeschen'] = False
+            else:
+                st.session_state['bestaetigung_loeschen'] = True
+                st.warning("⚠️ Nochmal klicken zum Bestätigen!")
+    
+    st.divider()
+    
+    # Rezepte anzeigen
+    if len(rezepte) == 0:
+        st.info("📭 Keine Rezepte gefunden. Generieren Sie einen Speiseplan, um Rezepte zu sammeln!")
+    else:
+        for rezept in rezepte:
+            with st.expander(f"**{rezept['name']}** {'⭐' * rezept['bewertung']}", expanded=False):
+                col1, col2, col3 = st.columns([3, 1, 1])
+                
+                # Info
+                with col1:
+                    st.markdown(f"**{rezept['portionen']} Portionen**")
+                    if rezept['menu_linie']:
+                        st.caption(f"🍽️ {rezept['menu_linie']}")
+                    st.caption(f"⏱️ Vorbereitung: {rezept['vorbereitung']} | Garzeit: {rezept['garzeit']}")
+                    st.caption(f"📅 Erstellt: {rezept['erstellt_am'][:10]}")
+                    st.caption(f"🔄 Verwendet: {rezept['verwendet_count']}x")
+                
+                # Aktionen
+                with col2:
+                    try:
+                        # Konvertiere zu richtigem Format für PDF
+                        rezept_fuer_pdf = {
+                            'name': rezept['name'],
+                            'menu': rezept.get('menu_linie', ''),
+                            'tag': '',
+                            'woche': '',
+                            'portionen': rezept['portionen'],
+                            'zeiten': {
+                                'vorbereitung': rezept['vorbereitung'],
+                                'garzeit': rezept['garzeit'],
+                                'gesamt': rezept.get('gesamtzeit', '')
+                            },
+                            'zutaten': rezept['zutaten'],
+                            'zubereitung': rezept['zubereitung'],
+                            'naehrwerte': rezept['naehrwerte'],
+                            'allergene': rezept['allergene'],
+                            'tipps': rezept['tipps'],
+                            'variationen': rezept['variationen']
+                        }
+                        
+                        rezept_pdf = erstelle_rezept_pdf(rezept_fuer_pdf)
+                        st.download_button(
+                            label="📄 PDF",
+                            data=rezept_pdf,
+                            file_name=f"Rezept_{rezept['name'].replace(' ', '_')}.pdf",
+                            mime="application/pdf",
+                            key=f"biblio_pdf_{rezept['id']}",
+                            use_container_width=True
+                        )
+                    except Exception as e:
+                        st.error(f"PDF-Fehler: {str(e)[:30]}...")
+                
+                # Bewertung & Löschen
+                with col3:
+                    bewertung = st.select_slider(
+                        "⭐ Bewertung",
+                        options=[0, 1, 2, 3, 4, 5],
+                        value=rezept['bewertung'],
+                        key=f"bewertung_{rezept['id']}"
+                    )
+                    if bewertung != rezept['bewertung']:
+                        DB.bewerte_rezept(rezept['id'], bewertung)
+                        st.rerun()
+                    
+                    if st.button("🗑️", key=f"del_{rezept['id']}", help="Rezept löschen"):
+                        DB.loesche_rezept(rezept['id'])
+                        st.success("Rezept gelöscht!")
+                        st.rerun()
+                
+                # Rezept-Details
+                st.markdown("### 🥘 Zutaten")
+                cols = st.columns(2)
+                for i, zutat in enumerate(rezept['zutaten']):
+                    col_idx = i % 2
+                    with cols[col_idx]:
+                        st.write(f"• **{zutat['menge']}** {zutat['name']}")
+                
+                st.markdown("### 👨‍🍳 Zubereitung")
+                for i, schritt in enumerate(rezept['zubereitung'], 1):
+                    st.write(f"**{i}.** {schritt}")
+                
+                # Tags
+                if rezept.get('tags'):
+                    st.markdown("### 🏷️ Tags")
+                    st.write(" • ".join([f"`{tag}`" for tag in rezept['tags']]))
+                
+                # Button: Als Vorlage verwenden
+                if st.button(f"📋 Als Vorlage verwenden", key=f"template_{rezept['id']}"):
+                    st.session_state['vorlage_rezept'] = rezept
+                    DB.markiere_als_verwendet(rezept['id'], "Als Vorlage verwendet")
+                    st.success("✅ Rezept als Vorlage gespeichert! Verwenden Sie es beim nächsten Speiseplan.")
 
 
 # ==================== HAUPTPROGRAMM ====================
@@ -504,15 +826,16 @@ def main():
         
         st.success("✅ Speiseplan und Rezepte erfolgreich erstellt!")
         st.balloons()
-        
-        # ============== KOSTEN ANZEIGEN (OPTIONAL) ==============
-        if KOSTEN_TRACKING and cost_tracker:
-            zeige_kosten_anzeige(cost_tracker)
-        # ========================================================
+    
+    # ============== KOSTEN ANZEIGEN (PERSISTENT) ==============
+    # Zeige Kosten wenn vorhanden (auch nach Page Reload)
+    if KOSTEN_TRACKING and 'cost_tracker' in st.session_state and st.session_state['cost_tracker']:
+        zeige_kosten_anzeige(st.session_state['cost_tracker'])
+    # ==========================================================
     
     # Wenn Daten vorhanden, zeige Tabs
     if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
-        tab1, tab2 = st.tabs(["📋 Speiseplan", "📖 Rezepte"])
+        tab1, tab2, tab3 = st.tabs(["📋 Speiseplan", "📖 Rezepte", "📚 Bibliothek"])
         
         with tab1:
             zeige_speiseplan_tab(
@@ -521,10 +844,32 @@ def main():
             )
         
         with tab2:
-            if st.session_state.get('rezepte'):
-                zeige_rezepte_tab(st.session_state['rezepte'])
+            rezepte = st.session_state.get('rezepte')
+            if rezepte and isinstance(rezepte, dict) and 'rezepte' in rezepte and len(rezepte['rezepte']) > 0:
+                zeige_rezepte_tab(rezepte)
+            elif rezepte:
+                st.warning("⚠️ Rezepte wurden generiert, aber die Struktur ist unerwartet.")
+                st.write("**Debug-Info:**")
+                st.json(rezepte)
             else:
-                st.info("Rezepte werden nach der Speiseplan-Generierung hier angezeigt.")
+                st.info("ℹ️ Keine Rezepte verfügbar. Generieren Sie einen Speiseplan, um Rezepte zu erhalten.")
+                st.write("**Mögliche Gründe:**")
+                st.write("- Rezept-Generierung ist fehlgeschlagen")
+                st.write("- API-Antwort konnte nicht geparst werden")
+                st.write("- Versuchen Sie es erneut")
+        
+        with tab3:
+            zeige_bibliothek_tab()
+    else:
+        # Auch ohne Speiseplan: Zeige Bibliothek
+        st.info("💡 **Tipp:** Generieren Sie einen Speiseplan, um die Funktionen zu sehen.")
+        
+        if st.button("📚 Rezept-Bibliothek öffnen"):
+            st.session_state['nur_bibliothek'] = True
+            st.rerun()
+        
+        if st.session_state.get('nur_bibliothek'):
+            zeige_bibliothek_tab()
 
 
 # ==================== EINSTIEGSPUNKT ====================

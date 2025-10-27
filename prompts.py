@@ -111,42 +111,39 @@ def get_rezepte_prompt(speiseplan):
     for woche in speiseplan['speiseplan']['wochen']:
         for tag in woche['tage']:
             for menu in tag['menues']:
+                beilagen = menu['mittagessen'].get('beilagen', [])
+                beilagen_text = ', '.join(beilagen) if beilagen else "ohne Beilagen"
                 alle_gerichte.append({
                     'gericht': menu['mittagessen']['hauptgericht'],
-                    'beilagen': menu['mittagessen'].get('beilagen', []),
+                    'beilagen': beilagen,
+                    'beilagen_text': beilagen_text,
                     'woche': woche['woche'],
                     'tag': tag['tag'],
                     'menu': menu['menuName']
                 })
     
     gerichte_liste = "\n".join([
-        f"{i+1}. {g['gericht']} mit {', '.join(g['beilagen'])}" 
+        f"{i+1}. {g['gericht']} mit {g['beilagen_text']}" 
         for i, g in enumerate(alle_gerichte)
     ])
     
-    return f"""Du bist ein diätisch ausgebildeter Küchenmeister mit 25+ Jahren Erfahrung in der Gemeinschaftsverpflegung.
+    anzahl_gerichte = len(alle_gerichte)
+    
+    return f"""Du bist ein erfahrener Küchenmeister für Gemeinschaftsverpflegung.
 
-AUFGABE: Erstelle detaillierte, professionelle Rezepte für folgende Gerichte (inklusive ALLER Beilagen):
+AUFGABE: Erstelle {anzahl_gerichte} detaillierte Rezepte für folgende Gerichte:
 
 {gerichte_liste}
 
-WICHTIGE ANFORDERUNGEN:
-- Portionsangaben für 10 Personen (üblich in Gemeinschaftsverpflegung)
-- Seniorengerechte Zubereitung (weiche Konsistenzen wo nötig, gut kaubar)
+WICHTIG:
+- Jedes Rezept MUSS das Hauptgericht UND ALLE Beilagen enthalten
+- Portionsangaben für 10 Personen
 - Genaue Mengenangaben in Gramm/Liter
-- Schritt-für-Schritt Zubereitungsanleitung
-- Zubereitungszeit und Garzeit
+- Zubereitungsschritte für ALLE Komponenten
 - Nährwertangaben pro Portion
 - Allergenkennzeichnung
-- Praktische Tipps für Großküche
-- ALLE Beilagen müssen im Rezept enthalten sein (Hauptgericht + alle Beilagen)
 
-BEISPIEL für gutes Rezept:
-- Name: "Schweinebraten mit Salzkartoffeln, Rotkohl und Gurkensalat"
-- Zutaten: Schweinebraten-Zutaten, Kartoffel-Zutaten, Rotkohl-Zutaten, Gurkensalat-Zutaten
-- Zubereitung: Schritte für ALLE Komponenten
-
-JSON-FORMAT:
+JSON-FORMAT (GENAU SO):
 {{
   "rezepte": [
     {{
@@ -164,13 +161,13 @@ JSON-FORMAT:
         {{
           "name": "Zutat",
           "menge": "X g/ml",
-          "hinweis": "Optional: z.B. 'für den Schweinebraten' oder 'für die Kartoffeln'"
+          "hinweis": "Optional: für welche Komponente"
         }}
       ],
       "zubereitung": [
-        "Schritt 1 detailliert beschrieben",
-        "Schritt 2 detailliert beschrieben",
-        "Schritt 3 detailliert beschrieben"
+        "Schritt 1 ausführlich",
+        "Schritt 2 ausführlich",
+        "Schritt 3 ausführlich"
       ],
       "naehrwerte": {{
         "kalorien": "X kcal",
@@ -179,25 +176,26 @@ JSON-FORMAT:
         "kohlenhydrate": "X g",
         "ballaststoffe": "X g"
       }},
-      "allergene": ["Liste"],
+      "allergene": ["Allergen1", "Allergen2"],
       "tipps": [
-        "Tipp 1 für die Praxis in der Großküche",
-        "Tipp 2 für die Praxis in der Großküche"
+        "Tipp für Großküche 1",
+        "Tipp für Großküche 2"
       ],
       "variationen": {{
-        "pueriert": "Anleitung wie das Gericht püriert werden kann",
+        "pueriert": "Anleitung für pürierte Kost",
         "leichteKost": "Anpassung für leichte Vollkost"
       }}
     }}
   ]
 }}
 
-WICHTIG: 
-- Jedes Rezept muss ALLE Komponenten enthalten (Hauptgericht + ALLE Beilagen)
-- Mengenangaben müssen für 10 Portionen sein
-- Zubereitung muss Schritte für ALLE Komponenten enthalten
-- Antworte NUR mit validem JSON
-- KEIN TEXT VOR ODER NACH DEM JSON!"""
+KRITISCH WICHTIG:
+- Antworte NUR mit diesem JSON
+- KEIN Text vor oder nach dem JSON
+- KEINE Markdown-Formatierung
+- KEINE Backticks
+- Starte direkt mit {{ und ende mit }}
+- Erstelle ein Rezept für JEDES der {anzahl_gerichte} Gerichte oben"""
 
 
 def get_pruefung_prompt(speiseplan):
