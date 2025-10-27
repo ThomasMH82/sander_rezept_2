@@ -25,6 +25,7 @@ def parse_json_loose(text: str):
     import json as _json, re as _re
 
     # Codefences entfernen
+    text = sanitize_json_text(text)
     text = _re.sub(r"```(?:json)?\s*", "", text, flags=_re.IGNORECASE)
     text = text.replace("```", "").strip()
 
@@ -76,6 +77,50 @@ def _waehle_root(parsed):
             if isinstance(v, dict) and ("speiseplan" in v or "rezepte" in v):
                 return v
     return parsed
+
+def _strip_js_comments(s: str) -> str:
+    # Entfernt //line und /* block */ Kommentare – nur außerhalb von Strings
+    out, i, n, in_str, esc = [], 0, len(s), False, False
+    while i < n:
+        ch = s[i]
+        if in_str:
+            out.append(ch)
+            if esc:
+                esc = False
+            elif ch == '\\':
+                esc = True
+            elif ch in ('"', "'"):
+                in_str = False
+            i += 1
+            continue
+        if ch in ('"', "'"):
+            in_str = True
+            out.append(ch); i += 1; continue
+        if ch == '/' and i+1 < n and s[i+1] == '/':
+            # bis Zeilenende überspringen
+            i += 2
+            while i < n and s[i] not in '\r\n':
+                i += 1
+            continue
+        if ch == '/' and i+1 < n and s[i+1] == '*':
+            # bis */ überspringen
+            i += 2
+            while i+1 < n and not (s[i] == '*' and s[i+1] == '/'):
+                i += 1
+            i += 2
+            continue
+        out.append(ch); i += 1
+    return ''.join(out)
+
+def sanitize_json_text(text: str) -> str:
+    # Reihenfolge: Codefences raus, Smart Quotes -> ASCII, Kommentare weg, trailing commas killen
+    t = re.sub(r"```(?:json)?\s*", "", text, flags=re.IGNORECASE).replace("```", "").strip()
+    for k, v in SMART_QUOTES.items():
+        t = t.replace(k, v)
+    t = _strip_js_comments(t)
+    t = re.sub(r",\s*(?=[}\]])", "", t)
+    return t
+
 # ================================================================
 
 # Import der eigenen Module
@@ -184,12 +229,12 @@ def repariere_json(json_str):
 def rufe_claude_api(prompt, api_key, max_tokens=20000):
     """
     Ruft die Claude API auf und gibt die Antwort zurück.
-    Erzwingt JSON-Ausgabe und nutzt einen robusten Fallback-Parser.
-    Returns:
-        tuple: (parsed_data, error, usage_data)
+    Erzwingt JSON-Ausgabe, saniert Text, und macht bei Parse-Fehlern 1 strengen Retry.
+    Returns: (parsed_data, error, usage_data)
     """
-    try:
-        response = requests.post(
+
+    def _call_api(user_prompt, retry=False):
+        return requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
                 "Content-Type": "application/json",
@@ -197,80 +242,101 @@ def rufe_claude_api(prompt, api_key, max_tokens=20000):
                 "anthropic-version": "2023-06-01"
             },
             json={
+                # härtere Einstellungen für Konsistenz
                 "model": "claude-sonnet-4-20250514",
                 "max_tokens": max_tokens,
-                "messages": [{"role": "user", "content": prompt}],
-                # 🔒 Garantiert valide JSON-Antwort (ohne Markdown/Prosa)
+                "temperature": 0,
+                "top_p": 0,
+                # starker System-Hinweis beim Retry
+                "system": (
+                    "Antworte ausschließlich mit einem einzigen gültigen JSON-Objekt. "
+                    "Kein Markdown, keine Codeblöcke, keine Erklärungen, keine Kommentare."
+                ) if retry else None,
+                "messages": [{"role": "user", "content": user_prompt}],
                 "response_format": {"type": "json"}
             },
-            timeout=180  # 3 Minuten Timeout für große Anfragen
+            timeout=180
         )
 
+    try:
+        # 1. Versuch
+        response = _call_api(prompt, retry=False)
+
         if response.status_code != 200:
-            error_msg = f"API-Fehler: Status {response.status_code}"
             try:
-                error_detail = response.json()
-                error_msg += f" - {error_detail.get('error', {}).get('message', response.text)}"
+                detail = response.json()
+                msg = detail.get('error', {}).get('message', response.text)
             except Exception:
-                error_msg += f" - {response.text}"
-            return None, error_msg, None
+                msg = response.text
+            return None, f"API-Fehler: Status {response.status_code} - {msg}", None
 
         data = response.json()
-        # Bei response_format=json liegt der JSON-String im ersten Content-Chunk
         content0 = data.get("content", [{}])[0]
+        response_text = content0["text"] if isinstance(content0, dict) and "text" in content0 else (
+            content0 if isinstance(content0, str) else json.dumps(content0)
+        )
 
-        # Je nach API-Form kann content0 ein dict mit 'text' sein
-        if isinstance(content0, dict) and "text" in content0:
-            response_text = content0["text"]
-        else:
-            # Fallback: wenn Struktur anders ist, trotzdem einen string gewinnen
-            response_text = content0 if isinstance(content0, str) else json.dumps(content0)
-
-        # Debug-Preview sichern
-        if 'debug_raw_responses' not in st.session_state:
-            st.session_state['debug_raw_responses'] = []
-        st.session_state['debug_raw_responses'].append({
+        # Debug-Preview
+        st.session_state.setdefault('debug_raw_responses', []).append({
             'length': len(response_text) if isinstance(response_text, str) else 0,
             'preview': (response_text[:200] + '...') if isinstance(response_text, str) and len(response_text) > 200 else response_text
         })
 
-        # ✅ Primärer Versuch: direkt JSON parsen
+        # Direkt versuchen
         try:
             parsed_data = json.loads(response_text)
         except json.JSONDecodeError:
-            # ⚠️ Notfall: Fallback-Parser
-            st.warning("⚠️ JSON nicht direkt parsebar – Fallback-Parser wird verwendet …")
+            # Sanitize + loose parser
+            st.warning("⚠️ JSON nicht direkt parsebar – versuche Sanitisierung …")
             try:
                 parsed_data = parse_json_loose(response_text)
-                st.success("✅ JSON erfolgreich mit Fallback repariert!")
-            except json.JSONDecodeError as e:
-                # Saubere Fehlermeldung mit Debug-Hinweisen
-                error_msg  = f"JSON-Parsing-Fehler: {str(e)}\n"
-                error_msg += f"Antwort-Länge: {len(response_text) if isinstance(response_text, str) else 'N/A'} Zeichen\n"
-                error_msg += "\n**❌ PROBLEM: Plan ist zu groß/komplex für eine einzelne Antwort oder enthält Formatierungsreste**\n\n"
-                error_msg += "**✅ LÖSUNGEN:**\n"
-                error_msg += "1. **Empfohlen:** Max. 3 Wochen, 4 Linien (84 Menüs)\n"
-                error_msg += "2. **Schrittweise:** 1 Woche generieren, dann die nächste\n"
-                error_msg += "3. **Weniger Linien:** z. B. 3 statt 5\n"
-                # Minimaler Kontext um die Fehlerposition (falls vorhanden)
-                if hasattr(e, 'pos') and isinstance(response_text, str):
-                    start = max(0, e.pos - 100)
-                    end = min(len(response_text), e.pos + 100)
-                    error_msg += f"\n\n**Debug – Bereich um Fehler:**\n...{response_text[start:end]}...\n"
+            except json.JSONDecodeError:
+                # 🔁 Ein strenger Retry mit hartem Systemprompt
+                st.info("🔁 Starte einmaligen Retry mit strenger JSON-Vorgabe …")
+                retry_prompt = (
+                    prompt
+                    + "\n\nWICHTIG: Antworte ausschließlich mit einem einzelnen gültigen JSON-Objekt. "
+                      "Kein Markdown, keine Erklärungen, keine Kommentare."
+                )
+                r2 = _call_api(retry_prompt, retry=True)
+                if r2.status_code != 200:
+                    try:
+                        detail = r2.json()
+                        msg = detail.get('error', {}).get('message', r2.text)
+                    except Exception:
+                        msg = r2.text
+                    return None, f"API-Fehler (Retry): Status {r2.status_code} - {msg}", None
 
-                st.session_state['last_json_error'] = {
-                    'error': str(e),
-                    'raw_length': len(response_text) if isinstance(response_text, str) else None,
-                    'raw_preview': response_text[:1000] if isinstance(response_text, str) else None
-                }
-                return None, error_msg, None
+                d2 = r2.json()
+                c2 = d2.get("content", [{}])[0]
+                t2 = c2["text"] if isinstance(c2, dict) and "text" in c2 else (c2 if isinstance(c2, str) else json.dumps(c2))
 
-        # 🔎 Falls Antwort verschachtelt ist, richtige Root wählen
+                try:
+                    parsed_data = json.loads(t2)
+                except json.JSONDecodeError as e:
+                    # letzter Versuch mit Sanitize/loose
+                    t2s = sanitize_json_text(t2)
+                    try:
+                        parsed_data = parse_json_loose(t2s)
+                    except json.JSONDecodeError as e2:
+                        err = (
+                            f"JSON-Parsing-Fehler: {e2}\n"
+                            f"Antwort-Längen: first={len(response_text) if isinstance(response_text, str) else 'N/A'}, "
+                            f"retry={len(t2) if isinstance(t2, str) else 'N/A'}\n\n"
+                            "**Lösungen:**\n"
+                            "- Weniger Umfang (z. B. 1 Woche statt mehrere)\n"
+                            "- Weniger Menülinien\n"
+                            "- Erneut versuchen\n"
+                        )
+                        st.session_state['last_json_error'] = {
+                            'error': str(e2),
+                            'raw_preview_first': response_text[:1000] if isinstance(response_text, str) else None,
+                            'raw_preview_retry': t2[:1000] if isinstance(t2, str) else None
+                        }
+                        return None, err, None
+
         parsed_data = _waehle_root(parsed_data)
-
-        # Usage-Daten extrahieren (für Kosten-Tracking)
-        usage_data = data.get('usage', {})
-
+        usage_data = data.get('usage', {})  # beim Retry unkritisch; reicht der erste Call
         return parsed_data, None, usage_data
 
     except requests.exceptions.Timeout:
