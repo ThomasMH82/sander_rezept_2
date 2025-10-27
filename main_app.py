@@ -3,7 +3,7 @@ Hauptanwendung für den Speiseplan-Generator
 Neu designte, robuste Version: tageweise Plan-Erzeugung, 2-Tage Rezept-Gruppen,
 Coverage-Check, Tool-Call-Erzwingung, Sanitizer, Auto-Comma-Fixer, Schema-Validator.
 
-Version: 2.0.0
+Version: 2.0.1 - FIXED
 Datum: 27.10.2025
 """
 
@@ -16,8 +16,8 @@ from typing import List, Dict, Any, Tuple, Optional
 # ===================== JSON/Parsing-Utilities =====================
 
 SMART_QUOTES = {
-    "“": '"', "”": '"', "„": '"',
-    "’": "'", "‚": "'",
+    """: '"', """: '"', "„": '"',
+    "'": "'", "‚": "'",
 }
 
 def _strip_js_comments(s: str) -> str:
@@ -317,7 +317,7 @@ from cost_tracker import CostTracker, zeige_kosten_anzeige, zeige_kosten_warnung
 
 # ===================== Konfiguration =====================
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 VERSION_DATUM = "27.10.2025"
 SCHWELLWERT_AUFTEILUNG = 8  # sehr niedrig – zwingt Split früh
 
@@ -445,25 +445,25 @@ def _tag_prompt_ein_tag(tagname: str, menulinien: int, menu_namen: List[str]) ->
         "Abendessen, Zwischenmahlzeit\n\n"
         "ANTWORT-SCHEMA (JSON):\n"
         "{\n"
-        f"  \"tag\": \"{tagname}\",\n"
-        "  \"menues\": [\n"
-        "    {\n"
-        "      \"menuName\": \"Name der Menülinie\",\n"
-        "      \"fruehstueck\": {\"hauptgericht\": \"...\", \"beilagen\": [\"...\"], \"getraenk\": \"...\"},\n"
-        "      \"mittagessen\": {\n"
-        "        \"vorspeise\": \"...\",\n"
-        "        \"hauptgericht\": \"...\",\n"
-        "        \"beilagen\": [\"...\", \"...\", \"...\"],\n"
-        "        \"nachspeise\": \"...\",\n"
-        "        \"naehrwerte\": {\"kalorien\": \"ca. X kcal\", \"protein\": \"X g\"},\n"
-        "        \"allergene\": [\"...\"]\n"
-        "      },\n"
-        "      \"zwischenmahlzeit\": \"...\",\n"
-        "      \"abendessen\": {\"hauptgericht\": \"...\", \"beilagen\": [\"...\"], \"getraenk\": \"...\"}\n"
-        "    }\n"
-        "  ]\n"
-        "}\n"
-        f"WICHTIG: Gib **genau {menulinien}** Einträge in \"menues\" zurück, je einen pro Menülinie."
+        f'  "tag": "{tagname}",\n'
+        '  "menues": [\n'
+        '    {\n'
+        '      "menuName": "Name der Menülinie",\n'
+        '      "fruehstueck": {"hauptgericht": "...", "beilagen": ["..."], "getraenk": "..."},\n'
+        '      "mittagessen": {\n'
+        '        "vorspeise": "...",\n'
+        '        "hauptgericht": "...",\n'
+        '        "beilagen": ["...", "...", "..."],\n'
+        '        "nachspeise": "...",\n'
+        '        "naehrwerte": {"kalorien": "ca. X kcal", "protein": "X g"},\n'
+        '        "allergene": ["..."]\n'
+        '      },\n'
+        '      "zwischenmahlzeit": "...",\n'
+        '      "abendessen": {"hauptgericht": "...", "beilagen": ["..."], "getraenk": "..."}\n'
+        '    }\n'
+        '  ]\n'
+        '}\n'
+        f'WICHTIG: Gib **genau {menulinien}** Einträge in "menues" zurück, je einen pro Menülinie.'
     )
 
 def _generiere_woche_tageweise(api_key: str, menulinien: int, menu_namen: List[str]) -> Tuple[Optional[Dict[str,Any]], Optional[str]]:
@@ -648,56 +648,58 @@ def generiere_speiseplan_mit_rezepten(wochen: int, menulinien: int, menu_namen: 
 
     return sp_data, rez_data, None, None, cost_tracker
 
-# ===================== UI =====================
+# ===================== UI-Funktionen =====================
 
 def zeige_sidebar():
     with st.sidebar:
-        st.header("🔑 API-Konfiguration")
-        api_key_from_secrets = None
-        try:
-            if hasattr(st, 'secrets') and 'ANTHROPIC_API_KEY' in st.secrets:
-                api_key_from_secrets = st.secrets['ANTHROPIC_API_KEY']
-                st.success("✅ API-Key aus Konfiguration geladen.")
-        except Exception:
-            pass
-        api_key_manual = st.text_input("Claude API-Key", type="password", placeholder="sk-ant-…")
-        api_key = api_key_manual or api_key_from_secrets
-
+        st.header("⚙️ Einstellungen")
+        api_key = st.text_input("🔑 Anthropic API-Key", type="password", value=st.session_state.get('api_key',''))
+        st.session_state['api_key'] = api_key
         st.divider()
-        st.header("⚙️ Speiseplan")
-        wochen = st.number_input("Anzahl Wochen", 1, 4, 1)
-        menulinien = st.number_input("Anzahl Menülinien", 1, 5, 2)
-
-        st.subheader("Bezeichnung der Menülinien")
+        
+        wochen = st.number_input("📅 Anzahl Wochen", min_value=1, max_value=4, value=1)
+        menulinien = st.number_input("🍽️ Anzahl Menülinien", min_value=1, max_value=5, value=2)
+        
         menu_namen = []
-        for i in range(menulinien):
-            menu_namen.append(st.text_input(f"Menülinie {i+1}", value=f"Menü {i+1}", key=f"menu_{i}"))
-
+        if menulinien > 0:
+            st.markdown("**Namen der Menülinien:**")
+            default_namen = ["Vollkost", "Vegetarisch", "Schonkost", "Diabetiker", "Pürierkost"]
+            for i in range(menulinien):
+                default = default_namen[i] if i < len(default_namen) else f"Menülinie {i+1}"
+                name = st.text_input(f"Menülinie {i+1}", value=default, key=f"menu_{i}")
+                menu_namen.append(name)
+        
+        if KOSTEN_TRACKING:
+            zeige_kosten_in_sidebar()
+        
+        start = st.button("🚀 Speiseplan generieren", type="primary", use_container_width=True)
+        
         st.divider()
-        button_clicked = st.button("🚀 Speiseplan generieren", type="primary", use_container_width=True, disabled=not api_key)
-
-        if KOSTEN_TRACKING and 'cost_tracker' in st.session_state:
-            zeige_kosten_in_sidebar(st.session_state['cost_tracker'])
-
-        st.sidebar.divider()
-        st.caption(f"🔧 Version {VERSION} ({VERSION_DATUM}) • Auto-Split ab {SCHWELLWERT_AUFTEILUNG}")
-
-        return api_key, int(wochen), int(menulinien), menu_namen, button_clicked
+        with st.expander("ℹ️ Info"):
+            st.caption(f"Version: {VERSION}")
+            st.caption(f"Stand: {VERSION_DATUM}")
+            st.caption("👨‍🍳 Professionell für Gemeinschaftsverpflegung")
+        
+    return api_key, wochen, menulinien, menu_namen, start
 
 def zeige_speiseplan_tab(speiseplan, pruefung=None):
-    st.header("📋 Speiseplan")
+    st.header("📋 Ihr Speiseplan")
+    
     try:
         pdf = erstelle_speiseplan_pdf(speiseplan)
-        st.download_button("📄 Speiseplan als PDF (A4 quer)", data=pdf, file_name="Speiseplan.pdf", mime="application/pdf")
+        st.download_button("📄 PDF herunterladen", data=pdf, file_name="Speiseplan.pdf", mime="application/pdf", type="primary")
     except Exception as e:
         st.error(f"PDF-Fehler: {e}")
-
+    
     if pruefung:
-        with st.expander("✅ Qualitätsprüfung", expanded=False):
-            col1, col2 = st.columns(2)
-            col1.metric("Gesamtbewertung", pruefung.get('gesamtbewertung', 'N/A'))
-            col2.metric("Punktzahl", pruefung.get('punktzahl', 'N/A'))
-            if pruefung.get('fazit'):
+        with st.expander("🔍 Qualitätsprüfung", expanded=False):
+            if 'bewertungen' in pruefung:
+                cols = st.columns(len(pruefung['bewertungen']))
+                for i, bew in enumerate(pruefung['bewertungen']):
+                    with cols[i]:
+                        st.metric(bew['kategorie'], f"{bew['punkte']}/10")
+                        st.caption(bew['kommentar'])
+            if 'fazit' in pruefung:
                 st.info(pruefung['fazit'])
 
     for w in speiseplan['speiseplan']['wochen']:
