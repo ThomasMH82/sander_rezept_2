@@ -78,6 +78,22 @@ def _waehle_root(parsed):
                 return v
     return parsed
 
+def _extract_tool_input_from_anthropic(data):
+    """
+    Versucht aus einer Anthropic-Response den ersten tool_use-Block zu holen
+    und gibt dessen `input` (bereits geparstes JSON) zurück.
+    """
+    try:
+        content = data.get("content", [])
+        for item in content:
+            # Bei Anthropic kann item ein dict mit "type" sein
+            if isinstance(item, dict) and item.get("type") == "tool_use":
+                # item["input"] ist bereits ein Python-Objekt (dict/list) – kein json.loads nötig
+                return item.get("input")
+    except Exception:
+        pass
+    return None
+
 def _strip_js_comments(s: str) -> str:
     # Entfernt //line und /* block */ Kommentare – nur außerhalb von Strings
     out, i, n, in_str, esc = [], 0, len(s), False, False
@@ -227,6 +243,173 @@ def repariere_json(json_str):
 
 
 def rufe_claude_api(prompt, api_key, max_tokens=20000):
+    """
+    Ruft die Claude API auf und gibt die Antwort zurück.
+    Priorität: Tool-Call (tool_use) -> direktes, valides JSON.
+    Fallback: response_format=json + Sanitizer + 1 Retry.
+    Returns: (parsed_data, error, usage_data)
+    """
+
+    def _call_api(user_prompt, retry=False, force_tool=False):
+        payload = {
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": max_tokens,
+            "temperature": 0,
+            "top_p": 0,
+            "messages": [{"role": "user", "content": user_prompt}],
+            "timeout": 180
+        }
+
+        # ⚙️ Tool-Definition: sehr liberales Schema (nimmt jedes Objekt an)
+        tools = [{
+            "name": "return_json",
+            "description": "Gib das Ergebnis als JSON im 'input' dieses Tool-Calls zurück.",
+            "input_schema": {"type": "object"}  # bewusst liberal
+        }]
+
+        # Systeminstruktion: nur JSON via Tool-Call
+        system_strict = (
+            "Gib dein Ergebnis ausschließlich als Tool-Aufruf 'return_json' zurück. "
+            "Keine Erklärungen, kein Markdown, keine Kommentare, keine Codeblöcke. "
+            "Der gesamte Inhalt muss im 'input'-Feld eines einzigen Tool-Calls liegen. "
+            "Wenn du Listen oder große Objekte zurückgibst, gib sie vollständig im 'input' zurück."
+        )
+
+        if force_tool:
+            payload["tools"] = tools
+            payload["system"] = system_strict
+
+        # Beim Retry zusätzlich response_format setzen, falls doch Text kommt
+        if retry:
+            payload["response_format"] = {"type": "json"}
+            # system bleibt gesetzt, falls force_tool==True
+
+        # tatsächlicher Request
+        return requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "Content-Type": "application/json",
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01"
+            },
+            json=payload,
+            timeout=180
+        )
+
+    try:
+        # 1) Primär: Tool-Call erzwingen
+        response = _call_api(prompt, retry=False, force_tool=True)
+
+        if response.status_code != 200:
+            try:
+                detail = response.json()
+                msg = detail.get('error', {}).get('message', response.text)
+            except Exception:
+                msg = response.text
+            return None, f"API-Fehler: Status {response.status_code} - {msg}", None
+
+        data = response.json()
+
+        # ✅ Versuch A: tool_use extrahieren (bevor wir irgendetwas parsen)
+        tool_input = _extract_tool_input_from_anthropic(data)
+        if tool_input is not None:
+            parsed_data = _waehle_root(tool_input)
+            usage_data = data.get("usage", {})
+            return parsed_data, None, usage_data
+
+        # ❗Kein tool_use geliefert – Fallback: evtl. doch Text in content[0]["text"]
+        content0 = data.get("content", [{}])[0]
+        if isinstance(content0, dict) and "text" in content0:
+            response_text = content0["text"]
+        else:
+            response_text = content0 if isinstance(content0, str) else json.dumps(content0)
+
+        # Debug-Preview
+        st.session_state.setdefault('debug_raw_responses', []).append({
+            'length': len(response_text) if isinstance(response_text, str) else 0,
+            'preview': (response_text[:200] + '...') if isinstance(response_text, str) and len(response_text) > 200 else response_text
+        })
+
+        # Versuch B: direktes JSON
+        try:
+            parsed_data = json.loads(response_text)
+            parsed_data = _waehle_root(parsed_data)
+            usage_data = data.get("usage", {})
+            return parsed_data, None, usage_data
+        except json.JSONDecodeError:
+            pass
+
+        # Versuch C: Sanitizer + Loose-Parser
+        st.warning("⚠️ Kein Tool-Call erhalten – versuche JSON-Sanitisierung …")
+        try:
+            parsed_data = parse_json_loose(response_text)
+            parsed_data = _waehle_root(parsed_data)
+            usage_data = data.get("usage", {})
+            return parsed_data, None, usage_data
+        except json.JSONDecodeError:
+            # 🔁 Ein strenger Retry (immer noch mit Tool-Präferenz + zusätzlich response_format=json)
+            st.info("🔁 Starte einmaligen Retry mit strenger JSON-Vorgabe …")
+            r2 = _call_api(
+                prompt + "\n\nWICHTIG: Antworte ausschließlich als Tool-Aufruf 'return_json' mit einem einzigen JSON-Objekt in 'input'.",
+                retry=True,
+                force_tool=True
+            )
+
+            if r2.status_code != 200:
+                try:
+                    detail = r2.json()
+                    msg = detail.get('error', {}).get('message', r2.text)
+                except Exception:
+                    msg = r2.text
+                return None, f"API-Fehler (Retry): Status {r2.status_code} - {msg}", None
+
+            d2 = r2.json()
+
+            # zuerst wieder tool_use prüfen
+            tool_input2 = _extract_tool_input_from_anthropic(d2)
+            if tool_input2 is not None:
+                parsed_data = _waehle_root(tool_input2)
+                usage_data = d2.get("usage", {})
+                return parsed_data, None, usage_data
+
+            # Fallback auf Textfeld
+            c2 = d2.get("content", [{}])[0]
+            t2 = c2["text"] if isinstance(c2, dict) and "text" in c2 else (c2 if isinstance(c2, str) else json.dumps(c2))
+            try:
+                parsed_data = json.loads(t2)
+            except json.JSONDecodeError as e:
+                # letzter Schritt: sanitize + loose
+                t2s = sanitize_json_text(t2)
+                try:
+                    parsed_data = parse_json_loose(t2s)
+                except json.JSONDecodeError as e2:
+                    err = (
+                        f"JSON-Parsing-Fehler: {e2}\n"
+                        f"Antwort-Längen: first={len(response_text) if isinstance(response_text, str) else 'N/A'}, "
+                        f"retry={len(t2) if isinstance(t2, str) else 'N/A'}\n\n"
+                        "**Lösungen:**\n"
+                        "- Weniger Umfang (z. B. 1 Woche statt mehrere)\n"
+                        "- Weniger Menülinien\n"
+                        "- Erneut versuchen\n"
+                    )
+                    st.session_state['last_json_error'] = {
+                        'error': str(e2),
+                        'raw_preview_first': response_text[:1000] if isinstance(response_text, str) else None,
+                        'raw_preview_retry': t2[:1000] if isinstance(t2, str) else None
+                    }
+                    return None, err, None
+
+            parsed_data = _waehle_root(parsed_data)
+            usage_data = d2.get("usage", {})
+            return parsed_data, None, usage_data
+
+    except requests.exceptions.Timeout:
+        return None, "Timeout: Die API-Anfrage hat zu lange gedauert (>3min). Reduzieren Sie die Anzahl Wochen/Menülinien.", None
+    except requests.exceptions.RequestException as e:
+        return None, f"Netzwerkfehler: {str(e)}", None
+    except Exception as e:
+        return None, f"Unerwarteter Fehler: {str(e)}", None
+
     """
     Ruft die Claude API auf und gibt die Antwort zurück.
     Erzwingt JSON-Ausgabe, saniert Text, und macht bei Parse-Fehlern 1 strengen Retry.
