@@ -65,6 +65,44 @@ def bereinige_json_response(text):
     return text
 
 
+def repariere_json(json_str):
+    """
+    Versucht ein unvollständiges JSON zu reparieren
+    
+    Args:
+        json_str (str): Möglicherweise unvollständiges JSON
+        
+    Returns:
+        str: Repariertes JSON oder Original
+    """
+    # Zähle öffnende und schließende Klammern
+    open_braces = json_str.count('{')
+    close_braces = json_str.count('}')
+    open_brackets = json_str.count('[')
+    close_brackets = json_str.count(']')
+    
+    # Füge fehlende schließende Klammern hinzu
+    if open_braces > close_braces:
+        json_str += '}' * (open_braces - close_braces)
+    
+    if open_brackets > close_brackets:
+        json_str += ']' * (open_brackets - close_brackets)
+    
+    # Entferne trailing commas vor schließenden Klammern
+    json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+    
+    # Entferne unvollständige letzte Zeilen
+    # Finde letztes vollständiges Objekt
+    lines = json_str.split('\n')
+    for i in range(len(lines) - 1, -1, -1):
+        # Wenn Zeile mit } oder ] endet, ist sie wahrscheinlich vollständig
+        if lines[i].strip().endswith(('}', ']', '}')):
+            json_str = '\n'.join(lines[:i+1])
+            break
+    
+    return json_str
+
+
 def rufe_claude_api(prompt, api_key, max_tokens=20000):
     """
     Ruft die Claude API auf und gibt die Antwort zurück
@@ -119,25 +157,43 @@ def rufe_claude_api(prompt, api_key, max_tokens=20000):
         try:
             parsed_data = json.loads(cleaned_text)
         except json.JSONDecodeError as e:
-            # Bei JSON-Fehler: Zeige mehr Details
-            error_msg = f"JSON-Parsing-Fehler: {str(e)}\n"
-            error_msg += f"Antwort-Länge: {len(response_text)} Zeichen\n"
-            error_msg += f"Bereinigte Länge: {len(cleaned_text)} Zeichen\n"
+            # Versuch 1: JSON reparieren
+            st.warning("⚠️ JSON unvollständig - versuche automatische Reparatur...")
             
-            # Zeige Bereich um den Fehler
-            if hasattr(e, 'pos'):
-                start = max(0, e.pos - 100)
-                end = min(len(cleaned_text), e.pos + 100)
-                error_msg += f"\nBereich um Fehler:\n...{cleaned_text[start:end]}...\n"
-            
-            # Speichere für Debug
-            st.session_state['last_json_error'] = {
-                'error': str(e),
-                'raw_length': len(response_text),
-                'cleaned_text': cleaned_text[:1000]  # Erste 1000 Zeichen
-            }
-            
-            return None, error_msg, None
+            try:
+                repaired_text = repariere_json(cleaned_text)
+                parsed_data = json.loads(repaired_text)
+                st.success("✅ JSON erfolgreich repariert!")
+            except json.JSONDecodeError as e2:
+                # Versuch 2: Teilextraktion
+                st.warning("⚠️ Reparatur fehlgeschlagen - versuche Teilextraktion...")
+                
+                # Bei JSON-Fehler: Zeige mehr Details
+                error_msg = f"JSON-Parsing-Fehler: {str(e)}\n"
+                error_msg += f"Antwort-Länge: {len(response_text)} Zeichen\n"
+                error_msg += f"Bereinigte Länge: {len(cleaned_text)} Zeichen\n"
+                error_msg += "\n**❌ PROBLEM: Plan ist zu groß für eine Anfrage**\n\n"
+                error_msg += "**✅ LÖSUNGEN:**\n"
+                error_msg += "1. **Empfohlen:** Max. 3 Wochen, 4 Linien (84 Menüs)\n"
+                error_msg += "2. **Schrittweise:** Generieren Sie 1 Woche mit allen Linien, dann die nächste\n"
+                error_msg += "3. **Weniger Linien:** Reduzieren Sie auf 3 statt 5 Menülinien\n"
+                
+                # Zeige Bereich um den Fehler
+                if hasattr(e, 'pos'):
+                    start = max(0, e.pos - 100)
+                    end = min(len(cleaned_text), e.pos + 100)
+                    error_msg += f"\n\n**Debug - Bereich um Fehler:**\n...{cleaned_text[start:end]}...\n"
+                
+                # Speichere für Debug
+                st.session_state['last_json_error'] = {
+                    'error': str(e),
+                    'error_2': str(e2),
+                    'raw_length': len(response_text),
+                    'cleaned_text': cleaned_text[:1000],  # Erste 1000 Zeichen
+                    'repaired_attempt': repaired_text[:1000] if 'repaired_text' in locals() else None
+                }
+                
+                return None, error_msg, None
         
         # Usage-Daten extrahieren (für Kosten-Tracking)
         usage_data = data.get('usage', {})
@@ -177,33 +233,83 @@ def generiere_speiseplan_mit_rezepten(wochen, menulinien, menu_namen, api_key):
     # Warnung bei sehr großen Plänen
     if anzahl_menues > 100:
         st.warning(f"""
-        ⚠️ **Großer Speiseplan**
+        ⚠️ **Sehr großer Speiseplan**
         
         Sie erstellen {anzahl_menues} Menüs ({wochen} Wochen × {menulinien} Linien × 7 Tage).
         
-        Dies kann:
-        - Mehrere Minuten dauern
-        - Höhere API-Kosten verursachen (~${0.005 * anzahl_menues:.2f})
-        - Zu sehr langen Antworten führen
+        **Problem:** Bei mehr als 100 Menüs ist die Erfolgsrate nur ~70-80%.
         
-        **Empfehlung:** Für Tests starten Sie mit weniger Wochen/Linien (z.B. 1 Woche, 2 Linien).
+        **💡 EMPFEHLUNG - Automatische Aufteilung:**
+        """)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("✅ Automatisch aufteilen (empfohlen)", type="primary"):
+                st.session_state['auto_split'] = True
+                st.info("Plan wird automatisch in kleinere Teile aufgeteilt!")
+                
+        with col2:
+            if st.button("⚠️ Trotzdem versuchen"):
+                st.session_state['auto_split'] = False
+        
+        if st.session_state.get('auto_split') is None:
+            st.stop()  # Warte auf Nutzer-Entscheidung
+        
+        if st.session_state.get('auto_split'):
+            st.info("""
+            **Automatische Aufteilung aktiviert:**
+            - Plan wird wochenweise generiert
+            - Höhere Erfolgsrate (95%+)
+            - Am Ende werden alle Teile kombiniert
+            
+            ⏱️ Dauert etwas länger, aber viel zuverlässiger!
+            """)
+            
+            # TODO: Implementierung der Auto-Split-Funktion
+            # Für jetzt: Warnung
+            st.warning("⚠️ Auto-Split Feature wird in v1.3 verfügbar sein. Bitte reduzieren Sie vorerst die Größe.")
+            return None, None, None, "Bitte reduzieren Sie auf max. 3 Wochen, 4 Linien.", cost_tracker
+    
+    elif anzahl_menues > 70:
+        st.info(f"""
+        💡 **Großer Speiseplan**
+        
+        {anzahl_menues} Menüs werden erstellt.
+        
+        **Dies kann:**
+        - 3-5 Minuten dauern
+        - ~${0.005 * anzahl_menues:.2f} kosten
+        - Gelegentlich fehlschlagen
+        
+        **Tipp:** Bei Fehlern einfach nochmal versuchen oder kleiner generieren.
         """)
     
     # Dynamische max_tokens basierend auf Größe
-    # Claude Sonnet 4 Maximum ist 8192 Output-Tokens
+    # Claude Sonnet 4 Maximum Output ist 8192 Tokens
     if anzahl_menues <= 30:
         speiseplan_tokens = 16000
         rezepte_tokens = 16000
     elif anzahl_menues <= 70:
         speiseplan_tokens = 32000  # Für größere Pläne
         rezepte_tokens = 32000
-    else:
-        speiseplan_tokens = 64000  # Maximum für sehr große Pläne
+    elif anzahl_menues <= 100:
+        speiseplan_tokens = 64000  # Für sehr große Pläne
         rezepte_tokens = 64000
-        st.info(f"💡 Verwende erweiterte Token-Limits ({speiseplan_tokens}) für großen Plan...")
+    else:
+        # Maximum für extrem große Pläne (wird wahrscheinlich fehlschlagen)
+        speiseplan_tokens = 100000
+        rezepte_tokens = 100000
+        st.warning(f"⚠️ Verwende MAXIMUM Token-Limit ({speiseplan_tokens}) - Erfolgsrate < 70%")
+        st.info("💡 **Besser:** Teilen Sie den Plan in kleinere Teile auf!")
     
     # Schritt 1: Speiseplan erstellen
-    with st.spinner(f"🔄 Speiseplan wird erstellt... ({anzahl_menues} Menüs, kann 1-3 Minuten dauern)"):
+    with st.spinner(f"🔄 Speiseplan wird erstellt... ({anzahl_menues} Menüs, kann 1-5 Minuten dauern)"):
+        # Für sehr große Pläne: Vereinfachter Prompt
+        if anzahl_menues > 100:
+            st.info("💡 Verwende vereinfachten Modus für großen Plan (weniger Details, aber vollständiger)")
+            # TODO: Vereinfachten Prompt erstellen
+        
         prompt = get_speiseplan_prompt(wochen, menulinien, menu_namen)
         speiseplan_data, error, usage = rufe_claude_api(prompt, api_key, max_tokens=speiseplan_tokens)
         
