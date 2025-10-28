@@ -243,18 +243,25 @@ class JSONProcessor:
         """Versucht fehlende Kommata automatisch zu ergänzen"""
         # Füge Kommata zwischen aufeinanderfolgenden JSON-Werten ein
         patterns = [
+            # Fehlende Kommata zwischen Objekten/Arrays und Schlüsseln
+            (r'}\s*"', r'}, "'),
+            (r']\s*"', r'], "'),
+            # Fehlende Kommata zwischen Key-Value-Paaren
             (r'("\w+":\s*"[^"]*")\s+(")', r'\1, \2'),
             (r'("\w+":\s*\d+)\s+(")', r'\1, \2'),
             (r'("\w+":\s*true)\s+(")', r'\1, \2'),
             (r'("\w+":\s*false)\s+(")', r'\1, \2'),
             (r'("\w+":\s*null)\s+(")', r'\1, \2'),
-            (r'(})\s+(")', r'\1, \2'),
-            (r'(])\s+(")', r'\1, \2'),
+            # Fehlende Kommata in Arrays
+            (r'("\s*)\s*(")', r'\1, \2'),
+            # Fehlende Kommata zwischen komplexen Strukturen
+            (r'(\])\s*(\{)', r'\1, \2'),
+            (r'(\})\s*(\{)', r'\1, \2'),
         ]
-        
+
         for pattern, replacement in patterns:
             text = re.sub(pattern, replacement, text)
-        
+
         return text
 
 # ===================== WOCHENTAGE =====================

@@ -222,17 +222,91 @@ JSON-FORMAT:
 NUR JSON! KEIN ANDERER TEXT!"""
 
 def bereinige_json(text):
+    """Bereinigt Text für robustes JSON-Parsing mit mehreren Strategien"""
+    if not text:
+        return ""
+
+    # Entferne Markdown-Code-Blöcke
     text = re.sub(r'```json\n?', '', text)
     text = re.sub(r'```\n?', '', text)
     text = text.strip()
-    
+
+    # Ersetze Smart Quotes und typografische Zeichen
+    replacements = {
+        '"': '"', '"': '"', '„': '"',
+        ''': "'", '‚': "'", ''': "'",
+        '–': '-', '—': '-'
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    # Entferne Kommentare (JavaScript-Style)
+    text = re.sub(r'//.*?$', '', text, flags=re.MULTILINE)  # Einzeilige Kommentare
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)  # Mehrzeilige Kommentare
+
+    # Entferne trailing commas vor schließenden Klammern
+    text = re.sub(r',\s*([}\]])', r'\1', text)
+
+    # Extrahiere JSON-Objekt
     first_brace = text.find('{')
     last_brace = text.rfind('}')
-    
+
     if first_brace != -1 and last_brace != -1:
         text = text[first_brace:last_brace + 1]
-    
+
     return text
+
+def parse_json_mit_fallbacks(text):
+    """Versucht JSON mit mehreren Strategien zu parsen"""
+    if not text:
+        return None
+
+    # Strategie 1: Direktes Parsing
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategie 2: Nach Bereinigung
+    cleaned = bereinige_json(text)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategie 3: Versuche fehlende Kommata zu ergänzen
+    # Füge Komma zwischen } und " ein (häufiger Fehler)
+    text_with_commas = re.sub(r'}\s*"', r'}, "', cleaned)
+    text_with_commas = re.sub(r']\s*"', r'], "', text_with_commas)
+    # Füge Komma zwischen "wert" und "key" ein
+    text_with_commas = re.sub(r'(".*?")\s+(".*?":\s*)', r'\1, \2', text_with_commas)
+
+    try:
+        return json.loads(text_with_commas)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategie 4: Extrahiere größtes gültiges JSON-Objekt
+    stack = []
+    start_idx = None
+
+    for i, char in enumerate(cleaned):
+        if char == '{':
+            if not stack:
+                start_idx = i
+            stack.append(char)
+        elif char == '}':
+            if stack and stack[-1] == '{':
+                stack.pop()
+                if not stack and start_idx is not None:
+                    # Versuche dieses Objekt zu parsen
+                    try:
+                        candidate = cleaned[start_idx:i+1]
+                        return json.loads(candidate)
+                    except json.JSONDecodeError:
+                        continue
+
+    return None
 
 def rufe_claude_api(prompt, api_key, max_tokens=20000):
     try:
@@ -249,18 +323,23 @@ def rufe_claude_api(prompt, api_key, max_tokens=20000):
                 "messages": [{"role": "user", "content": prompt}]
             }
         )
-        
+
         if response.status_code != 200:
             return None, f"API-Fehler: Status {response.status_code} - {response.text}"
-        
+
         data = response.json()
         response_text = data['content'][0]['text']
-        
-        cleaned_text = bereinige_json(response_text)
-        parsed_data = json.loads(cleaned_text)
-        
+
+        # Verwende robuste Parsing-Funktion mit Fallbacks
+        parsed_data = parse_json_mit_fallbacks(response_text)
+
+        if parsed_data is None:
+            # Wenn alle Strategien fehlschlagen, zeige den Anfang der Antwort zur Diagnose
+            preview = response_text[:500] if len(response_text) > 500 else response_text
+            return None, f"JSON-Parsing fehlgeschlagen. Antwort-Vorschau:\n{preview}\n\n...Bitte versuchen Sie es erneut."
+
         return parsed_data, None
-        
+
     except json.JSONDecodeError as e:
         return None, f"JSON-Parsing-Fehler: {str(e)}"
     except Exception as e:
