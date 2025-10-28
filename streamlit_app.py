@@ -1040,7 +1040,7 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
 
             st.divider()
 
-            for rezept in st.session_state['rezepte']['rezepte']:
+            for idx, rezept in enumerate(st.session_state['rezepte']['rezepte']):
                 with st.expander(f"**{rezept['name']}** ({rezept['menu']})", expanded=False):
                     col1, col2 = st.columns([3, 1])
 
@@ -1055,7 +1055,7 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                             data=rezept_pdf,
                             file_name=f"Rezept_{rezept['name'].replace(' ', '_')}.pdf",
                             mime="application/pdf",
-                            key=f"pdf_{rezept['name']}"
+                            key=f"pdf_rezept_{idx}"
                         )
 
                     st.markdown("### Zutaten")
