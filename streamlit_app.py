@@ -72,12 +72,13 @@ st.title("👨‍🍳 Professioneller Speiseplan-Generator")
 st.markdown("*Für Gemeinschaftsverpflegung, Krankenhäuser & Senioreneinrichtungen*")
 st.divider()
 
-def generiere_speiseplan_prompt(wochen, menulinien, menu_namen):
+def generiere_tages_prompt(tag, woche_nr, menulinien, menu_namen):
+    """Generiert Prompt für einen einzelnen Tag"""
     menu_liste = "\n".join([f"{i+1}. {name}" for i, name in enumerate(menu_namen)])
-    
+
     return f"""Du bist ein diätisch ausgebildeter Küchenmeister mit über 25 Jahren Erfahrung in der Gemeinschaftsverpflegung, spezialisiert auf Krankenhaus- und Seniorenverpflegung.
 
-AUFGABE: Erstelle einen professionellen Speiseplan für {wochen} Woche(n) mit {menulinien} Menülinie(n).
+AUFGABE: Erstelle einen professionellen Speiseplan für {tag} (Woche {woche_nr}) mit {menulinien} Menülinie(n).
 
 MENÜLINIEN:
 {menu_liste}
@@ -101,47 +102,36 @@ ERNÄHRUNGSPHYSIOLOGISCHE ANFORDERUNGEN:
 
 WICHTIG: JEDES Mittagessen MUSS mindestens 2-3 Beilagen haben!
 
-STRUKTUR DER ANTWORT (JSON):
+STRUKTUR DER ANTWORT (JSON) - NUR FÜR DIESEN EINEN TAG:
 {{
-  "speiseplan": {{
-    "wochen": [
-      {{
-        "woche": 1,
-        "tage": [
-          {{
-            "tag": "Montag",
-            "menues": [
-              {{
-                "menuName": "Name der Menülinie",
-                "fruehstueck": {{
-                  "hauptgericht": "Gericht",
-                  "beilagen": ["Beilage 1", "Beilage 2"],
-                  "getraenk": "Getränk"
-                }},
-                "mittagessen": {{
-                  "vorspeise": "Suppe/Vorspeise",
-                  "hauptgericht": "Hauptgericht",
-                  "beilagen": ["Beilage 1 (z.B. Kartoffeln)", "Beilage 2 (z.B. Gemüse)", "Beilage 3 (z.B. Salat)"],
-                  "nachspeise": "Dessert",
-                  "naehrwerte": {{
-                    "kalorien": "ca. X kcal",
-                    "protein": "X g"
-                  }},
-                  "allergene": ["Liste der Allergene"]
-                }},
-                "zwischenmahlzeit": "Obst/Joghurt/etc.",
-                "abendessen": {{
-                  "hauptgericht": "Gericht",
-                  "beilagen": ["Beilage 1", "Beilage 2"],
-                  "getraenk": "Getränk"
-                }}
-              }}
-            ]
-          }}
-        ]
+  "tag": "{tag}",
+  "menues": [
+    {{
+      "menuName": "Name der Menülinie",
+      "fruehstueck": {{
+        "hauptgericht": "Gericht",
+        "beilagen": ["Beilage 1", "Beilage 2"],
+        "getraenk": "Getränk"
+      }},
+      "mittagessen": {{
+        "vorspeise": "Suppe/Vorspeise",
+        "hauptgericht": "Hauptgericht",
+        "beilagen": ["Beilage 1 (z.B. Kartoffeln)", "Beilage 2 (z.B. Gemüse)", "Beilage 3 (z.B. Salat)"],
+        "nachspeise": "Dessert",
+        "naehrwerte": {{
+          "kalorien": "ca. X kcal",
+          "protein": "X g"
+        }},
+        "allergene": ["Liste der Allergene"]
+      }},
+      "zwischenmahlzeit": "Obst/Joghurt/etc.",
+      "abendessen": {{
+        "hauptgericht": "Gericht",
+        "beilagen": ["Beilage 1", "Beilage 2"],
+        "getraenk": "Getränk"
       }}
-    ]
-  }}
+    }}
+  ]
 }}
 
 WICHTIGE JSON-REGELN:
@@ -154,22 +144,16 @@ WICHTIGE JSON-REGELN:
 
 Antworte NUR mit dem return_json Tool-Call. Kein Text davor oder danach!"""
 
-def generiere_rezepte_prompt(speiseplan):
-    alle_gerichte = []
-    for woche in speiseplan['speiseplan']['wochen']:
-        for tag in woche['tage']:
-            for menu in tag['menues']:
-                alle_gerichte.append({
-                    'gericht': menu['mittagessen']['hauptgericht'],
-                    'beilagen': menu['mittagessen'].get('beilagen', []),
-                    'woche': woche['woche'],
-                    'tag': tag['tag'],
-                    'menu': menu['menuName']
-                })
-    
+def generiere_rezepte_prompt(gerichte_batch):
+    """
+    Generiert Prompt für eine Batch von Gerichten
+
+    Args:
+        gerichte_batch: Liste von Dicts mit gericht, beilagen, woche, tag, menu
+    """
     gerichte_liste = "\n".join([
-        f"{i+1}. {g['gericht']} mit {', '.join(g['beilagen'])}" 
-        for i, g in enumerate(alle_gerichte)
+        f"{i+1}. {g['gericht']} mit {', '.join(g['beilagen'])} (Woche {g['woche']}, {g['tag']}, {g['menu']})"
+        for i, g in enumerate(gerichte_batch)
     ])
     
     return f"""Du bist ein diätisch ausgebildeter Küchenmeister mit 25+ Jahren Erfahrung.
@@ -233,6 +217,90 @@ WICHTIGE JSON-REGELN:
 - Keine Kommentare im JSON
 
 Antworte NUR mit dem return_json Tool-Call!"""
+
+
+def generiere_rezepte_batch(speiseplan, api_key, batch_size=10, progress_callback=None):
+    """
+    Generiert Rezepte in Batches um Timeouts zu vermeiden
+
+    Args:
+        speiseplan: Der generierte Speiseplan
+        api_key: API-Schlüssel
+        batch_size: Anzahl Rezepte pro Batch (Standard: 10)
+        progress_callback: Optional - Funktion für Fortschrittsanzeige
+
+    Returns:
+        Tuple von (rezepte_data, error_message)
+    """
+    import time
+
+    # Extrahiere alle Hauptgerichte
+    alle_gerichte = []
+    for woche in speiseplan['speiseplan']['wochen']:
+        for tag in woche['tage']:
+            for menu in tag['menues']:
+                hauptgericht = menu.get('mittagessen', {}).get('hauptgericht')
+                if hauptgericht:
+                    alle_gerichte.append({
+                        'gericht': hauptgericht,
+                        'beilagen': menu['mittagessen'].get('beilagen', []),
+                        'woche': woche['woche'],
+                        'tag': tag['tag'],
+                        'menu': menu['menuName']
+                    })
+
+    if not alle_gerichte:
+        return None, "Keine Gerichte im Speiseplan gefunden"
+
+    # Teile in Batches auf
+    alle_rezepte = []
+    anzahl_batches = (len(alle_gerichte) + batch_size - 1) // batch_size
+
+    for i in range(0, len(alle_gerichte), batch_size):
+        batch_nr = (i // batch_size) + 1
+        batch = alle_gerichte[i:i + batch_size]
+
+        if progress_callback:
+            progress_callback(
+                f"Generiere Rezepte... Batch {batch_nr}/{anzahl_batches} "
+                f"({len(batch)} Rezepte)"
+            )
+
+        # Generiere Rezepte für diesen Batch
+        prompt = generiere_rezepte_prompt(batch)
+        rezepte_data, error = rufe_claude_api(prompt, api_key, max_tokens=16000, use_json_mode=True)
+
+        if error:
+            # Bei Fehler: Versuche mit kleinerem Batch
+            if len(batch) > 5:
+                if progress_callback:
+                    progress_callback(f"⚠️ Batch zu groß, teile auf...")
+
+                # Teile Batch in zwei Hälften
+                mid = len(batch) // 2
+                for sub_batch in [batch[:mid], batch[mid:]]:
+                    prompt = generiere_rezepte_prompt(sub_batch)
+                    rezepte_data, error = rufe_claude_api(prompt, api_key, max_tokens=16000, use_json_mode=True)
+
+                    if not error and rezepte_data and 'rezepte' in rezepte_data:
+                        alle_rezepte.extend(rezepte_data['rezepte'])
+                    time.sleep(1)
+            else:
+                # Auch kleine Batches schlagen fehl, überspringe
+                st.warning(f"⚠️ Rezeptgenerierung für Batch {batch_nr} fehlgeschlagen: {error}")
+                continue
+        else:
+            if rezepte_data and 'rezepte' in rezepte_data:
+                alle_rezepte.extend(rezepte_data['rezepte'])
+
+        # Pause zwischen Batches
+        time.sleep(0.5)
+
+    if not alle_rezepte:
+        return None, "Keine Rezepte konnten generiert werden"
+
+    return {'rezepte': alle_rezepte}, None
+
 
 def bereinige_json(text):
     """Bereinigt JSON-Text mit mehreren Fallback-Strategien"""
@@ -427,6 +495,87 @@ def fix_common_json_errors(text):
 
     return text
 
+def generiere_speiseplan_inkrementell(wochen, menulinien, menu_namen, api_key, progress_callback=None):
+    """
+    Generiert Speiseplan inkrementell (Tag für Tag) um Timeouts zu vermeiden
+
+    Args:
+        wochen: Anzahl der Wochen
+        menulinien: Anzahl der Menülinien
+        menu_namen: Liste der Menünamen
+        api_key: API-Schlüssel
+        progress_callback: Optional - Funktion für Fortschrittsanzeige
+
+    Returns:
+        Tuple von (speiseplan_data, error_message)
+    """
+    import time
+
+    WOCHENTAGE = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag", "Sonntag"]
+
+    alle_wochen = []
+    gesamt_tage = wochen * 7
+    aktueller_tag = 0
+
+    # Generiere Woche für Woche
+    for woche_nr in range(1, wochen + 1):
+        tage_daten = []
+
+        # Generiere jeden Tag einzeln
+        for tag_name in WOCHENTAGE:
+            aktueller_tag += 1
+
+            # Fortschrittsanzeige
+            if progress_callback:
+                progress_callback(
+                    f"Generiere {tag_name}, Woche {woche_nr}... ({aktueller_tag}/{gesamt_tage} Tage)"
+                )
+
+            # Generiere Prompt für diesen Tag
+            prompt = generiere_tages_prompt(tag_name, woche_nr, menulinien, menu_namen)
+
+            # API-Aufruf für diesen einen Tag
+            tag_data, error = rufe_claude_api(prompt, api_key, max_tokens=8000, use_json_mode=True)
+
+            if error:
+                return None, f"Fehler bei {tag_name}, Woche {woche_nr}: {error}"
+
+            # Validiere dass wir die richtige Struktur haben
+            if not tag_data or "tag" not in tag_data or "menues" not in tag_data:
+                # Retry einmal
+                time.sleep(2)
+                tag_data, error = rufe_claude_api(prompt, api_key, max_tokens=8000, use_json_mode=True)
+                if error or not tag_data or "tag" not in tag_data:
+                    return None, f"Ungültige Struktur für {tag_name}, Woche {woche_nr}"
+
+            # Stelle sicher, dass wir die richtige Anzahl Menüs haben
+            if len(tag_data.get("menues", [])) != menulinien:
+                st.warning(f"⚠️ {tag_name}: Erwartete {menulinien} Menüs, erhielt {len(tag_data.get('menues', []))}")
+
+            tage_daten.append(tag_data)
+
+            # Kleine Pause zwischen Anfragen um Rate-Limits zu vermeiden
+            time.sleep(0.5)
+
+        # Füge Woche hinzu
+        wochen_data = {
+            "woche": woche_nr,
+            "tage": tage_daten
+        }
+        alle_wochen.append(wochen_data)
+
+    # Erstelle finalen Speiseplan
+    speiseplan = {
+        "speiseplan": {
+            "wochen": alle_wochen,
+            "menuLinien": menulinien,
+            "menuNamen": menu_namen
+        }
+    }
+
+    return speiseplan, None
+
+
 def erstelle_speiseplan_pdf(speiseplan):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20*mm, leftMargin=20*mm,
@@ -594,10 +743,27 @@ if not api_key:
     st.info("Sie können einen API-Key unter https://console.anthropic.com/ erstellen.")
 else:
     if st.sidebar.button("🚀 Speiseplan generieren & prüfen", type="primary", use_container_width=True):
-        with st.spinner("⏳ Speiseplan wird erstellt..."):
-            prompt = generiere_speiseplan_prompt(wochen, menulinien, menu_namen)
-            speiseplan_data, error = rufe_claude_api(prompt, api_key)
-            
+        # Container für Fortschrittsanzeige
+        progress_placeholder = st.empty()
+        status_placeholder = st.empty()
+
+        def zeige_fortschritt(nachricht):
+            """Callback für Fortschrittsanzeige"""
+            status_placeholder.info(f"🔄 {nachricht}")
+
+        with st.spinner("⏳ Speiseplan wird erstellt (Tag für Tag)..."):
+            # Verwende inkrementelle Generierung um Timeouts zu vermeiden
+            speiseplan_data, error = generiere_speiseplan_inkrementell(
+                wochen,
+                menulinien,
+                menu_namen,
+                api_key,
+                progress_callback=zeige_fortschritt
+            )
+
+            # Lösche Fortschrittsanzeige
+            status_placeholder.empty()
+
             if error:
                 st.error(f"❌ Fehler beim Erstellen des Speiseplans: {error}")
 
@@ -613,11 +779,23 @@ else:
                     """)
             else:
                 st.session_state['speiseplan'] = speiseplan_data
-                
-                with st.spinner("🔍 Rezepte werden erstellt..."):
-                    rezepte_prompt = generiere_rezepte_prompt(speiseplan_data)
-                    rezepte_data, error2 = rufe_claude_api(rezepte_prompt, api_key)
-                    
+                st.success("✅ Speiseplan erfolgreich erstellt!")
+
+                # Rezepte in Batches generieren
+                rezept_status = st.empty()
+                def zeige_rezept_fortschritt(nachricht):
+                    rezept_status.info(f"📖 {nachricht}")
+
+                with st.spinner("📖 Rezepte werden erstellt (in Batches)..."):
+                    rezepte_data, error2 = generiere_rezepte_batch(
+                        speiseplan_data,
+                        api_key,
+                        batch_size=7,  # 7 Rezepte pro Batch (1 Tag)
+                        progress_callback=zeige_rezept_fortschritt
+                    )
+
+                    rezept_status.empty()
+
                     if error2:
                         st.warning(f"⚠️ Speiseplan erstellt, aber Rezepte fehlgeschlagen: {error2}")
                         with st.expander("🔍 Rezept-Fehler Details"):
@@ -625,8 +803,8 @@ else:
                         st.session_state['rezepte'] = None
                     else:
                         st.session_state['rezepte'] = rezepte_data
-                
-                st.success("✅ Speiseplan und Rezepte erfolgreich erstellt!")
+                        st.success(f"✅ {len(rezepte_data['rezepte'])} Rezepte erfolgreich erstellt!")
+
                 st.balloons()
 
 # Anzeige der Ergebnisse
