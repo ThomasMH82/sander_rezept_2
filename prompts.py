@@ -9,7 +9,14 @@ Alle Prompt-Templates zentral verwaltet
 TOOL_DIRECTIVE = (
     "ANTWORTFORMAT: Antworte ausschließlich als Tool-Aufruf 'return_json'. "
     "Gib das komplette Ergebnis als EIN JSON-Objekt im Feld 'input' zurück. "
-    "Kein Markdown, keine Erklärungen, keine Kommentare, keine Codeblöcke. "
+    "\n\nWICHTIGE JSON-REGELN:\n"
+    "- Alle Strings in doppelten Anführungszeichen (\")\n"
+    "- Kommata zwischen allen Feldern, KEINE trailing commas vor } oder ]\n"
+    "- Alle Klammern müssen geschlossen sein: { } [ ]\n"
+    "- Keine Kommentare im JSON\n"
+    "- Keine Sonderzeichen oder Smart Quotes\n"
+    "- JSON muss PERFEKT valide sein\n\n"
+    "Kein Markdown, keine Erklärungen, keine Codeblöcke. "
     "Kein Text vor oder nach dem JSON-Objekt."
 )
 
