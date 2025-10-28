@@ -102,6 +102,8 @@ ERNÄHRUNGSPHYSIOLOGISCHE ANFORDERUNGEN:
 
 WICHTIG: JEDES Mittagessen MUSS mindestens 2-3 Beilagen haben!
 
+KRITISCH: Du MUSST mit einem JSON-Objekt antworten, das EXAKT diese Struktur hat:
+
 STRUKTUR DER ANTWORT (JSON) - NUR FÜR DIESEN EINEN TAG:
 {{
   "tag": "{tag}",
@@ -343,6 +345,34 @@ def bereinige_json(text):
 
     return text
 
+def normalize_response_structure(data):
+    """
+    Normalisiert die Response-Struktur, um verschachtelte oder unerwartete Formate zu behandeln
+
+    Args:
+        data: Die rohe Response-Daten
+
+    Returns:
+        Normalisierte Daten-Struktur
+    """
+    if not isinstance(data, dict):
+        return data
+
+    # Wenn die Antwort bereits die erwarteten Felder hat, gib sie direkt zurück
+    if "menues" in data or "rezepte" in data or "pruefung" in data:
+        return data
+
+    # Suche nach verschachtelten Strukturen
+    for key in ["data", "result", "output", "response", "tag", "day", "menu_plan", "speiseplan"]:
+        if key in data and isinstance(data[key], dict):
+            nested = data[key]
+            # Rekursiv normalisieren
+            if "menues" in nested or "rezepte" in nested or "pruefung" in nested:
+                return normalize_response_structure(nested)
+
+    # Wenn nichts gefunden, gib die Original-Daten zurück
+    return data
+
 def rufe_claude_api(prompt, api_key, max_tokens=20000, use_json_mode=True):
     """
     Ruft Claude API auf mit verbessertem JSON-Parsing
@@ -369,6 +399,9 @@ def rufe_claude_api(prompt, api_key, max_tokens=20000, use_json_mode=True):
                 "Gib dein Ergebnis AUSSCHLIESSLICH als Tool-Aufruf 'return_json' zurück. "
                 "Das JSON muss PERFEKT valide sein: alle Strings in doppelten Anführungszeichen, "
                 "korrekte Kommata zwischen Feldern, keine trailing commas. "
+                "WICHTIG: Das JSON-Objekt MUSS die Top-Level-Felder haben, die im Prompt gefordert werden "
+                "(z.B. 'tag' und 'menues' für Tagespläne, 'rezepte' für Rezepte). "
+                "Erstelle KEINE verschachtelte Wrapper-Objekte. "
                 "Keine Erklärungen, kein Markdown, nur strukturiertes JSON im Tool-Call."
             )
             payload["tools"] = [{
@@ -405,7 +438,8 @@ def rufe_claude_api(prompt, api_key, max_tokens=20000, use_json_mode=True):
                 if isinstance(item, dict) and item.get('type') == 'tool_use':
                     tool_input = item.get('input', {})
                     if tool_input:
-                        return tool_input, None
+                        # Normalisiere die Response - extrahiere verschachtelte Strukturen
+                        return normalize_response_structure(tool_input), None
 
         # Strategie 2: Text-Response parsen
         if 'content' in data and data['content']:
@@ -427,7 +461,8 @@ def rufe_claude_api(prompt, api_key, max_tokens=20000, use_json_mode=True):
                 try:
                     parsed = strategy(response_text)
                     if parsed and isinstance(parsed, dict):
-                        return parsed, None
+                        # Normalisiere die Struktur
+                        return normalize_response_structure(parsed), None
                 except json.JSONDecodeError as e:
                     last_error = e
                     continue
@@ -560,19 +595,41 @@ def generiere_speiseplan_inkrementell(wochen, menulinien, menu_namen, api_key, p
                         last_error = f"tag_data ist kein Dictionary: {type(tag_data)}"
                         continue
 
+                    # Versuche verschachtelte Strukturen zu extrahieren
+                    # Manchmal gibt die API verschachtelte Responses zurück
+                    if "menues" not in tag_data:
+                        # Suche in verschachtelten Strukturen
+                        for key in ["data", "result", "output", "tag", "day"]:
+                            if key in tag_data and isinstance(tag_data[key], dict):
+                                if "menues" in tag_data[key]:
+                                    tag_data = tag_data[key]
+                                    break
+
                     # Repariere fehlende Felder
                     if "tag" not in tag_data:
                         tag_data["tag"] = tag_name
 
                     if "menues" not in tag_data or not isinstance(tag_data.get("menues"), list):
-                        last_error = "Feld 'menues' fehlt oder ist keine Liste"
+                        # Erweiterte Debug-Informationen
+                        debug_keys = list(tag_data.keys()) if isinstance(tag_data, dict) else []
+                        last_error = f"Feld 'menues' fehlt oder ist keine Liste. Vorhandene Felder: {debug_keys}"
+
+                        # Log die tatsächliche Struktur für Debugging
+                        if progress_callback:
+                            progress_callback(f"⚠️ Debug: API gab zurück: {json.dumps(tag_data, ensure_ascii=False)[:300]}...")
+
                         if versuch < max_retries - 1:
                             if progress_callback:
                                 progress_callback(f"⚠️ Ungültige Struktur für {tag_name}, Versuch {versuch + 2}/{max_retries}...")
                             time.sleep(2)
                             continue
                         else:
-                            return None, f"Ungültige Struktur für {tag_name}, Woche {woche_nr}: {last_error}"
+                            # Letzte Rettungsversuch: Erstelle eine leere Struktur wenn gar nichts hilft
+                            error_details = f"Ungültige Struktur für {tag_name}, Woche {woche_nr}\n"
+                            error_details += f"Fehler: {last_error}\n\n"
+                            error_details += "Erhaltene Daten-Struktur:\n"
+                            error_details += json.dumps(tag_data, indent=2, ensure_ascii=False)[:1000]
+                            return None, error_details
 
                     # Stelle sicher, dass wir die richtige Anzahl Menüs haben
                     anzahl_menues = len(tag_data.get("menues", []))
