@@ -966,31 +966,7 @@ else:
             else:
                 st.session_state['speiseplan'] = speiseplan_data
                 st.success("✅ Speiseplan erfolgreich erstellt!")
-
-                # Rezepte in Batches generieren
-                rezept_status = st.empty()
-                def zeige_rezept_fortschritt(nachricht):
-                    rezept_status.info(f"📖 {nachricht}")
-
-                with st.spinner("📖 Rezepte werden erstellt (in Batches)..."):
-                    rezepte_data, error2 = generiere_rezepte_batch(
-                        speiseplan_data,
-                        api_key,
-                        batch_size=7,  # 7 Rezepte pro Batch (1 Tag)
-                        progress_callback=zeige_rezept_fortschritt
-                    )
-
-                    rezept_status.empty()
-
-                    if error2:
-                        st.warning(f"⚠️ Speiseplan erstellt, aber Rezepte fehlgeschlagen: {error2}")
-                        with st.expander("🔍 Rezept-Fehler Details"):
-                            st.code(error2, language="text")
-                        st.session_state['rezepte'] = None
-                    else:
-                        st.session_state['rezepte'] = rezepte_data
-                        st.success(f"✅ {len(rezepte_data['rezepte'])} Rezepte erfolgreich erstellt!")
-
+                st.info("💡 Die Rezepte können Sie jetzt im Tab 'Rezepte' bei Bedarf generieren.")
                 st.balloons()
 
 # Anzeige der Ergebnisse
@@ -1046,9 +1022,12 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                 st.divider()
     
     with tab2:
+        st.header("Detaillierte Rezepte")
+
+        # Prüfe ob Rezepte bereits generiert wurden
         if 'rezepte' in st.session_state and st.session_state['rezepte']:
-            st.header("Detaillierte Rezepte")
-            
+            # Rezepte sind vorhanden - zeige sie an
+
             # Alle Rezepte PDF-Export
             alle_rezepte_pdf = erstelle_alle_rezepte_pdf(st.session_state['rezepte'])
             st.download_button(
@@ -1058,17 +1037,17 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                 mime="application/pdf",
                 use_container_width=True
             )
-            
+
             st.divider()
-            
+
             for rezept in st.session_state['rezepte']['rezepte']:
                 with st.expander(f"**{rezept['name']}** ({rezept['menu']})", expanded=False):
                     col1, col2 = st.columns([3, 1])
-                    
+
                     with col1:
                         st.markdown(f"**{rezept['portionen']} Portionen** | {rezept['tag']}, Woche {rezept['woche']}")
                         st.caption(f"⏱️ Vorbereitung: {rezept['zeiten']['vorbereitung']} | Garzeit: {rezept['zeiten']['garzeit']}")
-                    
+
                     with col2:
                         rezept_pdf = erstelle_rezept_pdf(rezept)
                         st.download_button(
@@ -1078,15 +1057,15 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                             mime="application/pdf",
                             key=f"pdf_{rezept['name']}"
                         )
-                    
+
                     st.markdown("### Zutaten")
                     for zutat in rezept['zutaten']:
                         st.write(f"• **{zutat['menge']}** {zutat['name']}")
-                    
+
                     st.markdown("### Zubereitung")
                     for i, schritt in enumerate(rezept['zubereitung'], 1):
                         st.info(f"**Schritt {i}:** {schritt}")
-                    
+
                     st.markdown("### Nährwerte pro Portion")
                     n = rezept['naehrwerte']
                     cols = st.columns(5)
@@ -1095,10 +1074,64 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                     cols[2].metric("Fett", n['fett'])
                     cols[3].metric("KH", n['kohlenhydrate'])
                     cols[4].metric("Ballaststoffe", n['ballaststoffe'])
-                    
+
                     if rezept.get('tipps'):
                         st.markdown("### 💡 Tipps für die Großküche")
                         for tipp in rezept['tipps']:
                             st.success(tipp)
         else:
-            st.info("Rezepte werden nach der Speiseplan-Generierung hier angezeigt.")
+            # Keine Rezepte vorhanden - zeige Button zur Generierung
+            st.info(
+                "💡 **Zeit und Kosten sparen!**\n\n"
+                "Rezepte werden nur generiert, wenn Sie sie benötigen. "
+                "Dies spart API-Kosten und Wartezeit."
+            )
+
+            st.divider()
+
+            # Button zum Generieren der Rezepte
+            if st.button("📖 Rezepte jetzt generieren", type="primary", use_container_width=True):
+                rezept_status = st.empty()
+                def zeige_rezept_fortschritt(nachricht):
+                    rezept_status.info(f"📖 {nachricht}")
+
+                with st.spinner("📖 Rezepte werden erstellt (in Batches)..."):
+                    rezepte_data, error2 = generiere_rezepte_batch(
+                        st.session_state['speiseplan'],
+                        api_key,
+                        batch_size=7,  # 7 Rezepte pro Batch (1 Tag)
+                        progress_callback=zeige_rezept_fortschritt
+                    )
+
+                    rezept_status.empty()
+
+                    if error2:
+                        st.error(f"❌ Rezeptgenerierung fehlgeschlagen: {error2}")
+                        with st.expander("🔍 Fehler-Details"):
+                            st.code(error2, language="text")
+                    else:
+                        st.session_state['rezepte'] = rezepte_data
+                        st.success(f"✅ {len(rezepte_data['rezepte'])} Rezepte erfolgreich erstellt!")
+                        st.balloons()
+                        st.rerun()  # Seite neu laden um Rezepte anzuzeigen
+
+            st.divider()
+
+            # Informationen zu Kosten und Zeit
+            with st.expander("ℹ️ Warum separate Generierung?"):
+                st.markdown("""
+                **Vorteile der separaten Rezeptgenerierung:**
+
+                - **💰 Kostenersparnis**: Rezepte werden nur generiert, wenn Sie sie wirklich brauchen
+                - **⚡ Schneller Start**: Der Speiseplan ist sofort verfügbar
+                - **🎯 Flexibilität**: Sie entscheiden, wann Sie die Details benötigen
+                - **📊 Transparenz**: Sie sehen genau, was generiert wird
+
+                **Geschätzte Generierungszeit:**
+                - Pro Rezept: ca. 10-15 Sekunden
+                - Für einen Wochenplan (14 Rezepte): ca. 3-5 Minuten
+
+                **API-Kosten:**
+                - Speiseplan: ~0,10 - 0,20 EUR
+                - Rezepte: ~0,20 - 0,40 EUR zusätzlich
+                """)
