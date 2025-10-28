@@ -144,9 +144,15 @@ STRUKTUR DER ANTWORT (JSON):
   }}
 }}
 
-WICHTIG: Antworte NUR mit validem JSON. Keine Markdown-Formatierung, keine Backticks.
-STARTE MIT {{ UND ENDE MIT }}
-KEIN TEXT DAVOR ODER DANACH!"""
+WICHTIGE JSON-REGELN:
+- Verwende AUSSCHLIESSLICH den Tool-Call 'return_json'
+- Alle Strings in doppelten Anführungszeichen (")
+- Kommata zwischen allen Feldern, KEINE trailing commas vor }} oder ]
+- Alle Klammern müssen geschlossen sein: {{ }} [ ]
+- Keine Kommentare im JSON
+- Keine Sonderzeichen oder Smart Quotes
+
+Antworte NUR mit dem return_json Tool-Call. Kein Text davor oder danach!"""
 
 def generiere_rezepte_prompt(speiseplan):
     alle_gerichte = []
@@ -219,23 +225,95 @@ JSON-FORMAT:
   ]
 }}
 
-NUR JSON! KEIN ANDERER TEXT!"""
+WICHTIGE JSON-REGELN:
+- Verwende AUSSCHLIESSLICH den Tool-Call 'return_json'
+- Alle Strings in doppelten Anführungszeichen (")
+- Kommata zwischen allen Feldern, KEINE trailing commas
+- Alle Klammern müssen geschlossen sein
+- Keine Kommentare im JSON
+
+Antworte NUR mit dem return_json Tool-Call!"""
 
 def bereinige_json(text):
-    text = re.sub(r'```json\n?', '', text)
-    text = re.sub(r'```\n?', '', text)
+    """Bereinigt JSON-Text mit mehreren Fallback-Strategien"""
+    if not text:
+        return ""
+
+    # Entferne Markdown Code-Blöcke
+    text = re.sub(r'```json\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'```\s*', '', text)
     text = text.strip()
-    
+
+    # Ersetze typografische Anführungszeichen
+    replacements = {
+        '"': '"', '"': '"', '„': '"',  # Smart quotes
+        ''': "'", ''': "'", '‚': "'",
+        '–': '-', '—': '-',  # Dashes
+        '\u200b': '',  # Zero-width space
+        '\xa0': ' ',  # Non-breaking space
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    # Entferne JavaScript-style Kommentare
+    text = re.sub(r'//.*?$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.DOTALL)
+
+    # Entferne trailing commas (häufiger JSON-Fehler)
+    text = re.sub(r',(\s*[}\]])', r'\1', text)
+
+    # Finde das JSON-Objekt
     first_brace = text.find('{')
     last_brace = text.rfind('}')
-    
-    if first_brace != -1 and last_brace != -1:
+
+    if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
         text = text[first_brace:last_brace + 1]
-    
+
+    # Normalisiere Whitespace
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip()
+
     return text
 
-def rufe_claude_api(prompt, api_key, max_tokens=20000):
+def rufe_claude_api(prompt, api_key, max_tokens=20000, use_json_mode=True):
+    """
+    Ruft Claude API auf mit verbessertem JSON-Parsing
+
+    Args:
+        prompt: Der Prompt-Text
+        api_key: API-Schlüssel
+        max_tokens: Maximale Token-Anzahl
+        use_json_mode: Ob JSON-Tool-Call verwendet werden soll
+    """
     try:
+        # Request-Payload erstellen
+        payload = {
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": max_tokens,
+            "temperature": 0.0,  # Deterministisch für konsistente JSON-Ausgabe
+            "messages": [{"role": "user", "content": prompt}]
+        }
+
+        # Optional: Tool-Call für strukturierte JSON-Ausgabe
+        if use_json_mode:
+            payload["system"] = (
+                "Du bist ein diätisch ausgebildeter Küchenmeister. "
+                "Gib dein Ergebnis AUSSCHLIESSLICH als Tool-Aufruf 'return_json' zurück. "
+                "Das JSON muss PERFEKT valide sein: alle Strings in doppelten Anführungszeichen, "
+                "korrekte Kommata zwischen Feldern, keine trailing commas. "
+                "Keine Erklärungen, kein Markdown, nur strukturiertes JSON im Tool-Call."
+            )
+            payload["tools"] = [{
+                "name": "return_json",
+                "description": "Gibt strukturierte JSON-Daten zurück",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }]
+            payload["tool_choice"] = {"type": "tool", "name": "return_json"}
+
+        # API-Aufruf
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -243,28 +321,111 @@ def rufe_claude_api(prompt, api_key, max_tokens=20000):
                 "x-api-key": api_key,
                 "anthropic-version": "2023-06-01"
             },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": max_tokens,
-                "messages": [{"role": "user", "content": prompt}]
-            }
+            json=payload,
+            timeout=180
         )
-        
+
         if response.status_code != 200:
-            return None, f"API-Fehler: Status {response.status_code} - {response.text}"
-        
+            error_detail = response.text[:500]
+            return None, f"API-Fehler {response.status_code}: {error_detail}"
+
         data = response.json()
-        response_text = data['content'][0]['text']
-        
-        cleaned_text = bereinige_json(response_text)
-        parsed_data = json.loads(cleaned_text)
-        
-        return parsed_data, None
-        
-    except json.JSONDecodeError as e:
-        return None, f"JSON-Parsing-Fehler: {str(e)}"
+
+        # Strategie 1: Tool-Call Response parsen
+        if use_json_mode and 'content' in data:
+            for item in data['content']:
+                if isinstance(item, dict) and item.get('type') == 'tool_use':
+                    tool_input = item.get('input', {})
+                    if tool_input:
+                        return tool_input, None
+
+        # Strategie 2: Text-Response parsen
+        if 'content' in data and data['content']:
+            response_text = data['content'][0].get('text', '')
+
+            if not response_text:
+                return None, "Leere Antwort von API erhalten"
+
+            # Mehrfache Parsing-Versuche
+            parsing_strategies = [
+                lambda t: json.loads(t),  # Direkt
+                lambda t: json.loads(bereinige_json(t)),  # Nach Bereinigung
+                lambda t: json.loads(extract_json_object(t)),  # Extrahiere größtes JSON
+                lambda t: json.loads(fix_common_json_errors(bereinige_json(t)))  # Repariere häufige Fehler
+            ]
+
+            last_error = None
+            for i, strategy in enumerate(parsing_strategies, 1):
+                try:
+                    parsed = strategy(response_text)
+                    if parsed and isinstance(parsed, dict):
+                        return parsed, None
+                except json.JSONDecodeError as e:
+                    last_error = e
+                    continue
+                except Exception as e:
+                    last_error = e
+                    continue
+
+            # Alle Strategien fehlgeschlagen
+            error_msg = f"JSON-Parsing fehlgeschlagen nach {len(parsing_strategies)} Versuchen. "
+            error_msg += f"Letzter Fehler: {str(last_error)}"
+
+            # Debug-Info (erste und letzte 200 Zeichen)
+            debug_preview = response_text[:200] + "..." + response_text[-200:]
+            error_msg += f"\n\nAntwort-Vorschau: {debug_preview}"
+
+            return None, error_msg
+
+        return None, "Unerwartetes Response-Format"
+
+    except requests.exceptions.Timeout:
+        return None, "API-Timeout: Anfrage dauerte zu lange (>180s)"
+    except requests.exceptions.RequestException as e:
+        return None, f"Netzwerkfehler: {str(e)}"
     except Exception as e:
-        return None, f"Fehler: {str(e)}"
+        return None, f"Unerwarteter Fehler: {str(e)}"
+
+
+def extract_json_object(text):
+    """Extrahiert das größte JSON-Objekt aus Text"""
+    stack = []
+    start_idx = None
+
+    for i, char in enumerate(text):
+        if char in '{[':
+            if not stack:
+                start_idx = i
+            stack.append(char)
+        elif char in '}]':
+            if stack:
+                expected = '{' if char == '}' else '['
+                if stack[-1] == expected:
+                    stack.pop()
+                    if not stack and start_idx is not None:
+                        return text[start_idx:i+1]
+
+    return text
+
+
+def fix_common_json_errors(text):
+    """Repariert häufige JSON-Fehler"""
+    # Füge fehlende Kommata zwischen Objekten ein
+    patterns = [
+        # Nach String-Wert vor neuem Key
+        (r'("(?:[^"\\]|\\.)*")\s*\n\s*(")', r'\1,\n\2'),
+        # Nach Zahl vor neuem Key
+        (r'(\d+)\s*\n\s*(")', r'\1,\n\2'),
+        # Nach Boolean vor neuem Key
+        (r'(true|false)\s*\n\s*(")', r'\1,\n\2'),
+        # Nach geschlossener Klammer vor neuem Key
+        (r'([}\]])\s*\n\s*(")', r'\1,\n\2'),
+    ]
+
+    for pattern, replacement in patterns:
+        text = re.sub(pattern, replacement, text)
+
+    return text
 
 def erstelle_speiseplan_pdf(speiseplan):
     buffer = BytesIO()
@@ -439,6 +600,17 @@ else:
             
             if error:
                 st.error(f"❌ Fehler beim Erstellen des Speiseplans: {error}")
+
+                # Debug-Informationen in Expander
+                with st.expander("🔍 Debug-Informationen"):
+                    st.code(error, language="text")
+                    st.markdown("""
+                    **Mögliche Lösungen:**
+                    - Reduzieren Sie die Anzahl der Wochen oder Menülinien
+                    - Versuchen Sie es erneut (manchmal hilft ein zweiter Versuch)
+                    - Prüfen Sie Ihre API-Key-Gültigkeit
+                    - Kontaktieren Sie den Support wenn das Problem weiterhin besteht
+                    """)
             else:
                 st.session_state['speiseplan'] = speiseplan_data
                 
@@ -448,6 +620,8 @@ else:
                     
                     if error2:
                         st.warning(f"⚠️ Speiseplan erstellt, aber Rezepte fehlgeschlagen: {error2}")
+                        with st.expander("🔍 Rezept-Fehler Details"):
+                            st.code(error2, language="text")
                         st.session_state['rezepte'] = None
                     else:
                         st.session_state['rezepte'] = rezepte_data
