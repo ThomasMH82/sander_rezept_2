@@ -1311,14 +1311,75 @@ class StreamlitUI:
                     if rezept.get("variationen"):
                         st.success(f"🔄 **Variationen:** {rezept['variationen']}")
     
+    def show_statistics_dashboard(self, stats):
+        """Zeigt erweitertes Statistik-Dashboard"""
+        with st.expander("📊 Detaillierte Statistiken & Übersicht", expanded=False):
+            st.subheader("Datenbank-Übersicht")
+
+            # Zusammenfassung in Spalten
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.markdown("### 📖 Rezepte")
+                st.metric("Gesamt", stats["anzahl_rezepte"])
+                if stats["neueste"]:
+                    st.caption(f"Neuestes: {stats['neueste'][0][0]}")
+                    st.caption(f"am {stats['neueste'][0][1][:10]}")
+
+            with col2:
+                st.markdown("### 🏆 Top-Rezepte")
+                if stats["meistverwendet"]:
+                    for i, (name, count) in enumerate(stats["meistverwendet"][:3], 1):
+                        st.write(f"{i}. {name}: **{count}x** verwendet")
+                else:
+                    st.info("Noch keine Verwendungen")
+
+            with col3:
+                st.markdown("### ⭐ Best bewertet")
+                if stats["bestbewertet"]:
+                    for name, bewertung in stats["bestbewertet"][:3]:
+                        st.write(f"{'⭐' * bewertung} {name}")
+                else:
+                    st.info("Noch keine Bewertungen")
+
+            st.divider()
+
+            # Tag-Cloud
+            if stats["tags"]:
+                st.markdown("### 🏷️ Häufigste Tags")
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    sorted_tags = sorted(stats["tags"].items(), key=lambda x: x[1], reverse=True)
+                    for tag, count in sorted_tags[:5]:
+                        st.write(f"🏷️ **{tag}**: {count}x")
+
+                with col2:
+                    # Top-Tags als Badge-ähnliche Darstellung
+                    tags_str = " • ".join([f"{tag} ({count})" for tag, count in sorted_tags[:5]])
+                    st.info(tags_str)
+
+            st.divider()
+
+            # Neueste Rezepte
+            if stats["neueste"]:
+                st.markdown("### 🆕 Zuletzt hinzugefügt")
+                for name, datum in stats["neueste"]:
+                    col1, col2 = st.columns([3, 1])
+                    with col1:
+                        st.write(f"• {name}")
+                    with col2:
+                        st.caption(datum[:10])
+
     def show_library_tab(self):
         """Zeigt Rezept-Bibliothek"""
         st.header("📚 Rezept-Bibliothek")
         st.markdown("*Ihre Sammlung bewährter Rezepte*")
-        
+
         # Statistiken
         stats = self.db.hole_statistiken()
-        
+
+        # Quick Stats
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("📖 Gesamt", stats["anzahl_rezepte"])
@@ -1330,7 +1391,10 @@ class StreamlitUI:
         with col4:
             if stats["bestbewertet"]:
                 st.metric("⭐ Beste Bewertung", f"{stats['bestbewertet'][0][1]}/5")
-        
+
+        # Erweiterte Statistiken
+        self.show_statistics_dashboard(stats)
+
         st.divider()
         
         # Such- und Filteroptionen
