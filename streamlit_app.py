@@ -975,17 +975,34 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
     
     with tab1:
         st.header("Speiseplan")
-        
-        # PDF-Export Button
-        pdf_buffer = erstelle_speiseplan_pdf(st.session_state['speiseplan'])
-        st.download_button(
-            label="📄 Speiseplan als PDF herunterladen (DIN A4 quer)",
-            data=pdf_buffer,
-            file_name="Speiseplan.pdf",
-            mime="application/pdf",
-            use_container_width=True
-        )
-        
+
+        st.markdown("### 📥 Download-Optionen")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # PDF-Export Button
+            pdf_buffer = erstelle_speiseplan_pdf(st.session_state['speiseplan'])
+            st.download_button(
+                label="📄 Speiseplan als PDF herunterladen (DIN A4 quer)",
+                data=pdf_buffer,
+                file_name="Speiseplan.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                type="primary"
+            )
+
+        with col2:
+            # JSON Export
+            speiseplan_json = json.dumps(st.session_state['speiseplan'], ensure_ascii=False, indent=2)
+            st.download_button(
+                label="📋 Speiseplan als JSON herunterladen",
+                data=speiseplan_json,
+                file_name="Speiseplan.json",
+                mime="application/json",
+                use_container_width=True
+            )
+
         st.divider()
         
         # Speiseplan anzeigen
@@ -1027,16 +1044,34 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
         # Prüfe ob Rezepte bereits generiert wurden
         if 'rezepte' in st.session_state and st.session_state['rezepte']:
             # Rezepte sind vorhanden - zeige sie an
+            st.success(f"✅ {len(st.session_state['rezepte']['rezepte'])} Rezepte wurden generiert!")
 
-            # Alle Rezepte PDF-Export
-            alle_rezepte_pdf = erstelle_alle_rezepte_pdf(st.session_state['rezepte'])
-            st.download_button(
-                label="📚 Alle Rezepte als PDF herunterladen",
-                data=alle_rezepte_pdf,
-                file_name="Alle_Rezepte.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+            st.markdown("### 📥 Download-Optionen")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                # Alle Rezepte PDF-Export
+                alle_rezepte_pdf = erstelle_alle_rezepte_pdf(st.session_state['rezepte'])
+                st.download_button(
+                    label="📚 Alle Rezepte als PDF herunterladen",
+                    data=alle_rezepte_pdf,
+                    file_name="Alle_Rezepte.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    type="primary"
+                )
+
+            with col2:
+                # JSON Export
+                rezepte_json = json.dumps(st.session_state['rezepte'], ensure_ascii=False, indent=2)
+                st.download_button(
+                    label="📋 Rezepte als JSON herunterladen",
+                    data=rezepte_json,
+                    file_name="Rezepte.json",
+                    mime="application/json",
+                    use_container_width=True
+                )
 
             st.divider()
 
@@ -1081,16 +1116,23 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                             st.success(tipp)
         else:
             # Keine Rezepte vorhanden - zeige Button zur Generierung
+            st.warning("⚠️ **Rezepte wurden noch nicht generiert!**")
+
             st.info(
                 "💡 **Zeit und Kosten sparen!**\n\n"
-                "Rezepte werden nur generiert, wenn Sie sie benötigen. "
-                "Dies spart API-Kosten und Wartezeit."
+                "Rezepte werden nur auf Anfrage generiert. "
+                "Dies spart API-Kosten und Wartezeit.\n\n"
+                "Nach der Generierung erhalten Sie **Download-Buttons** für:\n"
+                "- 📚 Alle Rezepte als PDF\n"
+                "- 📄 Einzelne Rezepte als PDF\n"
+                "- 📋 Rezepte als JSON"
             )
 
             st.divider()
 
-            # Button zum Generieren der Rezepte
-            if st.button("📖 Rezepte jetzt generieren", type="primary", use_container_width=True):
+            # Button zum Generieren der Rezepte - extra prominent
+            st.markdown("### 👇 Klicken Sie hier, um die Rezepte zu generieren")
+            if st.button("📖 Rezepte jetzt generieren", type="primary", use_container_width=True, help="Generiert detaillierte Rezepte für alle Hauptgerichte im Speiseplan"):
                 rezept_status = st.empty()
                 def zeige_rezept_fortschritt(nachricht):
                     rezept_status.info(f"📖 {nachricht}")
@@ -1112,7 +1154,10 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                     else:
                         st.session_state['rezepte'] = rezepte_data
                         st.success(f"✅ {len(rezepte_data['rezepte'])} Rezepte erfolgreich erstellt!")
+                        st.info("📥 Die Download-Buttons erscheinen gleich oben auf dieser Seite!")
                         st.balloons()
+                        import time
+                        time.sleep(2)  # Kurze Pause, damit der Nutzer die Nachricht sieht
                         st.rerun()  # Seite neu laden um Rezepte anzuzeigen
 
             st.divider()
