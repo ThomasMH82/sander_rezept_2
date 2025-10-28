@@ -794,40 +794,67 @@ def erstelle_rezept_pdf(rezept):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm,
                           topMargin=20*mm, bottomMargin=20*mm)
-    
+
     elements = []
     styles = getSampleStyleSheet()
-    
-    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, 
+
+    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18,
                                 textColor=colors.HexColor('#d97706'))
-    
-    elements.append(Paragraph(rezept['name'], title_style))
+
+    # Sichere Feldabfragen mit Fallbacks
+    name = rezept.get('name', 'Unbenanntes Rezept')
+    portionen = rezept.get('portionen', 10)
+    menu = rezept.get('menu', 'Menü')
+    tag = rezept.get('tag', '')
+    woche = rezept.get('woche', '')
+
+    elements.append(Paragraph(name, title_style))
     elements.append(Spacer(1, 10))
-    elements.append(Paragraph(f"{rezept['portionen']} Portionen | {rezept['menu']} | {rezept['tag']}, Woche {rezept['woche']}", 
+    elements.append(Paragraph(f"{portionen} Portionen | {menu} | {tag}, Woche {woche}",
                              styles['Normal']))
     elements.append(Spacer(1, 5))
-    elements.append(Paragraph(f"Vorbereitung: {rezept['zeiten']['vorbereitung']} | Garzeit: {rezept['zeiten']['garzeit']}", 
+
+    # Sichere Zeitabfrage
+    zeiten = rezept.get('zeiten', {})
+    vorbereitung = zeiten.get('vorbereitung', 'N/A')
+    garzeit = zeiten.get('garzeit', 'N/A')
+    elements.append(Paragraph(f"Vorbereitung: {vorbereitung} | Garzeit: {garzeit}",
                              styles['Normal']))
     elements.append(Spacer(1, 15))
     
     # Zutaten
     elements.append(Paragraph("<b>Zutaten</b>", styles['Heading2']))
-    for zutat in rezept['zutaten']:
-        elements.append(Paragraph(f"• {zutat['menge']} {zutat['name']}", styles['Normal']))
+    zutaten = rezept.get('zutaten', [])
+    if zutaten:
+        for zutat in zutaten:
+            menge = zutat.get('menge', '')
+            name = zutat.get('name', 'Unbekannte Zutat')
+            elements.append(Paragraph(f"• {menge} {name}", styles['Normal']))
+    else:
+        elements.append(Paragraph("Keine Zutaten angegeben", styles['Normal']))
     elements.append(Spacer(1, 15))
-    
+
     # Zubereitung
     elements.append(Paragraph("<b>Zubereitung</b>", styles['Heading2']))
-    for i, schritt in enumerate(rezept['zubereitung'], 1):
-        elements.append(Paragraph(f"<b>Schritt {i}:</b> {schritt}", styles['Normal']))
-        elements.append(Spacer(1, 5))
+    zubereitung = rezept.get('zubereitung', [])
+    if zubereitung:
+        for i, schritt in enumerate(zubereitung, 1):
+            elements.append(Paragraph(f"<b>Schritt {i}:</b> {schritt}", styles['Normal']))
+            elements.append(Spacer(1, 5))
+    else:
+        elements.append(Paragraph("Keine Zubereitungsschritte angegeben", styles['Normal']))
     elements.append(Spacer(1, 15))
-    
+
     # Nährwerte
     elements.append(Paragraph("<b>Nährwerte pro Portion</b>", styles['Heading2']))
-    naehr = rezept['naehrwerte']
+    naehr = rezept.get('naehrwerte', {})
+    kalorien = naehr.get('kalorien', 'N/A')
+    protein = naehr.get('protein', 'N/A')
+    fett = naehr.get('fett', 'N/A')
+    kohlenhydrate = naehr.get('kohlenhydrate', 'N/A')
+    ballaststoffe = naehr.get('ballaststoffe', 'N/A')
     elements.append(Paragraph(
-        f"{naehr['kalorien']} | Protein: {naehr['protein']} | Fett: {naehr['fett']} | KH: {naehr['kohlenhydrate']} | Ballaststoffe: {naehr['ballaststoffe']}", 
+        f"{kalorien} | Protein: {protein} | Fett: {fett} | KH: {kohlenhydrate} | Ballaststoffe: {ballaststoffe}",
         styles['Normal']))
     
     if rezept.get('allergene'):
@@ -848,40 +875,73 @@ def erstelle_alle_rezepte_pdf(rezepte_data):
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20*mm, leftMargin=20*mm,
                           topMargin=20*mm, bottomMargin=20*mm)
-    
+
     elements = []
     styles = getSampleStyleSheet()
-    
-    for i, rezept in enumerate(rezepte_data['rezepte']):
+
+    # Sichere Abfrage der Rezepte-Liste
+    rezepte = rezepte_data.get('rezepte', [])
+    if not rezepte:
+        # Leeres PDF wenn keine Rezepte
+        elements.append(Paragraph("Keine Rezepte verfügbar", styles['Heading1']))
+        doc.build(elements)
+        buffer.seek(0)
+        return buffer
+
+    for i, rezept in enumerate(rezepte):
         if i > 0:
             elements.append(PageBreak())
-        
-        title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18, 
+
+        title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=18,
                                     textColor=colors.HexColor('#d97706'))
-        
-        elements.append(Paragraph(rezept['name'], title_style))
+
+        # Sichere Feldabfragen
+        name = rezept.get('name', 'Unbenanntes Rezept')
+        portionen = rezept.get('portionen', 10)
+        menu = rezept.get('menu', 'Menü')
+
+        elements.append(Paragraph(name, title_style))
         elements.append(Spacer(1, 10))
-        elements.append(Paragraph(f"{rezept['portionen']} Portionen | {rezept['menu']}", styles['Normal']))
+        elements.append(Paragraph(f"{portionen} Portionen | {menu}", styles['Normal']))
         elements.append(Spacer(1, 5))
-        elements.append(Paragraph(f"Vorbereitung: {rezept['zeiten']['vorbereitung']} | Garzeit: {rezept['zeiten']['garzeit']}", 
+
+        # Sichere Zeitabfrage
+        zeiten = rezept.get('zeiten', {})
+        vorbereitung = zeiten.get('vorbereitung', 'N/A')
+        garzeit = zeiten.get('garzeit', 'N/A')
+        elements.append(Paragraph(f"Vorbereitung: {vorbereitung} | Garzeit: {garzeit}",
                                  styles['Normal']))
         elements.append(Spacer(1, 15))
         
         elements.append(Paragraph("<b>Zutaten</b>", styles['Heading2']))
-        for zutat in rezept['zutaten']:
-            elements.append(Paragraph(f"• {zutat['menge']} {zutat['name']}", styles['Normal']))
+        zutaten = rezept.get('zutaten', [])
+        if zutaten:
+            for zutat in zutaten:
+                menge = zutat.get('menge', '')
+                zutat_name = zutat.get('name', 'Unbekannte Zutat')
+                elements.append(Paragraph(f"• {menge} {zutat_name}", styles['Normal']))
+        else:
+            elements.append(Paragraph("Keine Zutaten angegeben", styles['Normal']))
         elements.append(Spacer(1, 15))
-        
+
         elements.append(Paragraph("<b>Zubereitung</b>", styles['Heading2']))
-        for j, schritt in enumerate(rezept['zubereitung'], 1):
-            elements.append(Paragraph(f"<b>{j}.</b> {schritt}", styles['Normal']))
-            elements.append(Spacer(1, 5))
+        zubereitung = rezept.get('zubereitung', [])
+        if zubereitung:
+            for j, schritt in enumerate(zubereitung, 1):
+                elements.append(Paragraph(f"<b>{j}.</b> {schritt}", styles['Normal']))
+                elements.append(Spacer(1, 5))
+        else:
+            elements.append(Paragraph("Keine Zubereitungsschritte angegeben", styles['Normal']))
         elements.append(Spacer(1, 15))
-        
+
         elements.append(Paragraph("<b>Nährwerte pro Portion</b>", styles['Heading2']))
-        naehr = rezept['naehrwerte']
+        naehr = rezept.get('naehrwerte', {})
+        kalorien = naehr.get('kalorien', 'N/A')
+        protein = naehr.get('protein', 'N/A')
+        fett = naehr.get('fett', 'N/A')
+        kohlenhydrate = naehr.get('kohlenhydrate', 'N/A')
         elements.append(Paragraph(
-            f"{naehr['kalorien']} | Protein: {naehr['protein']} | Fett: {naehr['fett']} | KH: {naehr['kohlenhydrate']}", 
+            f"{kalorien} | Protein: {protein} | Fett: {fett} | KH: {kohlenhydrate}",
             styles['Normal']))
     
     doc.build(elements)
@@ -1112,8 +1172,26 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                     else:
                         st.session_state['rezepte'] = rezepte_data
                         st.success(f"✅ {len(rezepte_data['rezepte'])} Rezepte erfolgreich erstellt!")
+
+                        # Zeige Download-Button sofort an
+                        st.info("📥 Die Rezepte sind jetzt verfügbar! Scrollen Sie nach unten für die Download-Buttons oder laden Sie die Seite neu.")
+
+                        # Erstelle und zeige den "Alle Rezepte"-Download-Button sofort
+                        try:
+                            alle_rezepte_pdf = erstelle_alle_rezepte_pdf(rezepte_data)
+                            st.download_button(
+                                label="📚 Alle Rezepte als PDF herunterladen",
+                                data=alle_rezepte_pdf,
+                                file_name="Alle_Rezepte.pdf",
+                                mime="application/pdf",
+                                use_container_width=True,
+                                key="download_all_rezepte_direct"
+                            )
+                        except Exception as e:
+                            st.error(f"Fehler beim Erstellen der PDF: {str(e)}")
+
                         st.balloons()
-                        st.rerun()  # Seite neu laden um Rezepte anzuzeigen
+                        st.rerun()  # Seite neu laden um alle Rezepte anzuzeigen
 
             st.divider()
 
