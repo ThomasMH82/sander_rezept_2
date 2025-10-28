@@ -534,25 +534,119 @@ def generiere_speiseplan_inkrementell(wochen, menulinien, menu_namen, api_key, p
             # Generiere Prompt für diesen Tag
             prompt = generiere_tages_prompt(tag_name, woche_nr, menulinien, menu_namen)
 
-            # API-Aufruf für diesen einen Tag
-            tag_data, error = rufe_claude_api(prompt, api_key, max_tokens=8000, use_json_mode=True)
+            # API-Aufruf für diesen einen Tag (mit mehreren Versuchen)
+            max_retries = 3
+            tag_data = None
+            last_error = None
 
-            if error:
-                return None, f"Fehler bei {tag_name}, Woche {woche_nr}: {error}"
-
-            # Validiere dass wir die richtige Struktur haben
-            if not tag_data or "tag" not in tag_data or "menues" not in tag_data:
-                # Retry einmal
-                time.sleep(2)
+            for versuch in range(max_retries):
                 tag_data, error = rufe_claude_api(prompt, api_key, max_tokens=8000, use_json_mode=True)
-                if error or not tag_data or "tag" not in tag_data:
-                    return None, f"Ungültige Struktur für {tag_name}, Woche {woche_nr}"
 
-            # Stelle sicher, dass wir die richtige Anzahl Menüs haben
-            if len(tag_data.get("menues", [])) != menulinien:
-                st.warning(f"⚠️ {tag_name}: Erwartete {menulinien} Menüs, erhielt {len(tag_data.get('menues', []))}")
+                if error:
+                    last_error = error
+                    if versuch < max_retries - 1:
+                        wait_time = 2 * (versuch + 1)
+                        if progress_callback:
+                            progress_callback(f"⚠️ Fehler bei {tag_name}, Versuch {versuch + 1}/{max_retries}. Warte {wait_time}s...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        return None, f"Fehler bei {tag_name}, Woche {woche_nr} nach {max_retries} Versuchen: {error}"
 
-            tage_daten.append(tag_data)
+                # Validiere und repariere Struktur
+                if tag_data:
+                    # Prüfe Grundstruktur
+                    if not isinstance(tag_data, dict):
+                        last_error = f"tag_data ist kein Dictionary: {type(tag_data)}"
+                        continue
+
+                    # Repariere fehlende Felder
+                    if "tag" not in tag_data:
+                        tag_data["tag"] = tag_name
+
+                    if "menues" not in tag_data or not isinstance(tag_data.get("menues"), list):
+                        last_error = "Feld 'menues' fehlt oder ist keine Liste"
+                        if versuch < max_retries - 1:
+                            if progress_callback:
+                                progress_callback(f"⚠️ Ungültige Struktur für {tag_name}, Versuch {versuch + 2}/{max_retries}...")
+                            time.sleep(2)
+                            continue
+                        else:
+                            return None, f"Ungültige Struktur für {tag_name}, Woche {woche_nr}: {last_error}"
+
+                    # Stelle sicher, dass wir die richtige Anzahl Menüs haben
+                    anzahl_menues = len(tag_data.get("menues", []))
+                    if anzahl_menues != menulinien:
+                        if progress_callback:
+                            progress_callback(f"⚠️ {tag_name}: Erwartete {menulinien} Menüs, erhielt {anzahl_menues}")
+
+                        # Versuche zu reparieren
+                        menues = tag_data["menues"]
+                        if anzahl_menues > menulinien:
+                            # Zu viele Menüs: Kürzen
+                            tag_data["menues"] = menues[:menulinien]
+                        elif anzahl_menues < menulinien and anzahl_menues > 0:
+                            # Zu wenige Menüs: Dupliziere das letzte
+                            while len(tag_data["menues"]) < menulinien:
+                                dupliziertes_menu = dict(menues[-1])
+                                idx = len(tag_data["menues"])
+                                if idx < len(menu_namen):
+                                    dupliziertes_menu["menuName"] = menu_namen[idx]
+                                tag_data["menues"].append(dupliziertes_menu)
+
+                            st.info(f"ℹ️ {tag_name}: Menüanzahl angepasst auf {menulinien}")
+                        elif anzahl_menues == 0:
+                            # Keine Menüs: Fehler
+                            last_error = "Keine Menüs in der Antwort gefunden"
+                            if versuch < max_retries - 1:
+                                continue
+                            else:
+                                return None, f"Keine Menüs für {tag_name}, Woche {woche_nr} generiert"
+
+                    # Validiere jedes Menü
+                    for idx, menu in enumerate(tag_data["menues"], 1):
+                        if not isinstance(menu, dict):
+                            last_error = f"Menü {idx} ist kein Dictionary"
+                            continue
+
+                        # Prüfe Pflichtfelder
+                        required = ["menuName", "fruehstueck", "mittagessen", "abendessen"]
+                        missing = [f for f in required if f not in menu]
+                        if missing:
+                            last_error = f"Menü {idx}: Fehlende Felder: {', '.join(missing)}"
+                            continue
+
+                        # Prüfe Mittagessen-Struktur
+                        if "mittagessen" in menu and isinstance(menu["mittagessen"], dict):
+                            mittag = menu["mittagessen"]
+                            if "hauptgericht" not in mittag:
+                                last_error = f"Menü {idx}: Hauptgericht fehlt"
+                                continue
+                            if "beilagen" not in mittag or not isinstance(mittag["beilagen"], list):
+                                # Setze leere Liste wenn fehlend
+                                mittag["beilagen"] = []
+                            if len(mittag["beilagen"]) < 2:
+                                st.warning(f"⚠️ {tag_name}, Menü {idx}: Nur {len(mittag['beilagen'])} Beilagen (empfohlen: mindestens 2)")
+
+                    # Wenn wir hier angekommen sind, ist die Struktur valide
+                    tage_daten.append(tag_data)
+                    break
+                else:
+                    last_error = "Keine Daten von API erhalten"
+                    if versuch < max_retries - 1:
+                        if progress_callback:
+                            progress_callback(f"⚠️ Keine Daten für {tag_name}, Versuch {versuch + 2}/{max_retries}...")
+                        time.sleep(2)
+                        continue
+                    else:
+                        return None, f"Keine Daten für {tag_name}, Woche {woche_nr} nach {max_retries} Versuchen"
+
+            # Wenn nach allen Versuchen immer noch kein valider Tag
+            if not tag_data or tag_data not in tage_daten:
+                debug_info = f"Letzter Fehler: {last_error}"
+                if tag_data:
+                    debug_info += f"\n\nErhaltene Daten-Struktur: {json.dumps(tag_data, indent=2, ensure_ascii=False)[:500]}..."
+                return None, f"Ungültige Struktur für {tag_name}, Woche {woche_nr}\n\n{debug_info}"
 
             # Kleine Pause zwischen Anfragen um Rate-Limits zu vermeiden
             time.sleep(0.5)
@@ -765,18 +859,53 @@ else:
             status_placeholder.empty()
 
             if error:
-                st.error(f"❌ Fehler beim Erstellen des Speiseplans: {error}")
+                st.error(f"❌ Fehler beim Erstellen des Speiseplans")
+
+                # Zeige Fehlerdetails
+                st.markdown(f"**Fehlerdetails:**")
+                st.code(error, language="text")
 
                 # Debug-Informationen in Expander
-                with st.expander("🔍 Debug-Informationen"):
-                    st.code(error, language="text")
+                with st.expander("🔍 Debug-Informationen und Lösungen"):
                     st.markdown("""
-                    **Mögliche Lösungen:**
-                    - Reduzieren Sie die Anzahl der Wochen oder Menülinien
-                    - Versuchen Sie es erneut (manchmal hilft ein zweiter Versuch)
-                    - Prüfen Sie Ihre API-Key-Gültigkeit
-                    - Kontaktieren Sie den Support wenn das Problem weiterhin besteht
+                    **Mögliche Ursachen:**
+                    1. **Ungültige API-Antwort**: Die KI hat keine valide JSON-Struktur zurückgegeben
+                    2. **API-Zeitüberschreitung**: Die Anfrage hat zu lange gedauert
+                    3. **Rate-Limiting**: Zu viele Anfragen in kurzer Zeit
+                    4. **Netzwerkprobleme**: Verbindungsfehler zur API
+
+                    **Empfohlene Lösungen:**
+                    - ✅ **Versuchen Sie es erneut**: Manchmal hilft ein zweiter Versuch
+                    - 📉 **Reduzieren Sie die Komplexität**:
+                      - Weniger Wochen (z.B. 1 statt 2)
+                      - Weniger Menülinien (z.B. 2 statt 3)
+                    - ⏱️ **Warten Sie kurz**: Bei Rate-Limiting 1-2 Minuten warten
+                    - 🔑 **Prüfen Sie Ihren API-Key**: Stellen Sie sicher, dass er gültig ist
+                    - 🌐 **Prüfen Sie Ihre Internetverbindung**
+
+                    **Technische Details:**
+                    Das System versucht automatisch 3x jeden Tag zu generieren und repariert
+                    kleinere Strukturfehler automatisch. Wenn der Fehler weiterhin besteht,
+                    könnte ein grundlegendes Problem mit der API-Kommunikation vorliegen.
                     """)
+
+                    # Zeige letzte Konfiguration
+                    st.divider()
+                    st.markdown("**Ihre Konfiguration:**")
+                    st.write(f"- Wochen: {wochen}")
+                    st.write(f"- Menülinien: {menulinien}")
+                    st.write(f"- Menü-Namen: {', '.join(menu_namen)}")
+
+                    # Quick-Actions
+                    st.divider()
+                    st.markdown("**Schnellaktionen:**")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("🔄 Mit 1 Woche erneut versuchen", key="retry_1week"):
+                            st.info("Bitte setzen Sie die Wochenanzahl auf 1 in der Sidebar und klicken Sie erneut auf 'Speiseplan generieren'")
+                    with col2:
+                        if st.button("📋 Nur 1 Menülinie versuchen", key="retry_1menu"):
+                            st.info("Bitte setzen Sie die Menülinien auf 1 in der Sidebar und klicken Sie erneut auf 'Speiseplan generieren'")
             else:
                 st.session_state['speiseplan'] = speiseplan_data
                 st.success("✅ Speiseplan erfolgreich erstellt!")
