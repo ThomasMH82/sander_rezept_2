@@ -67,14 +67,71 @@ with st.sidebar:
         name = st.text_input(f"Menülinie {i+1}", value=f"Menü {i+1}", key=f"menu_{i}")
         menu_namen.append(name)
 
+    st.divider()
+
+    st.subheader("Mahlzeiten-Auswahl")
+    st.caption("Wählen Sie, welche Mahlzeiten generiert werden sollen")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        generiere_fruehstueck = st.toggle("🌅 Frühstück", value=True, key="toggle_fruehstueck")
+    with col2:
+        generiere_mittagessen = st.toggle("🍽️ Mittagessen", value=True, key="toggle_mittagessen")
+    with col3:
+        generiere_abendessen = st.toggle("🌙 Abendessen", value=True, key="toggle_abendessen")
+
 # Titel
 st.title("👨‍🍳 Professioneller Speiseplan-Generator")
 st.markdown("*Für Gemeinschaftsverpflegung, Krankenhäuser & Senioreneinrichtungen*")
 st.divider()
 
-def generiere_tages_prompt(tag, woche_nr, menulinien, menu_namen):
+def generiere_tages_prompt(tag, woche_nr, menulinien, menu_namen, generiere_fruehstueck=True, generiere_mittagessen=True, generiere_abendessen=True):
     """Generiert Prompt für einen einzelnen Tag"""
     menu_liste = "\n".join([f"{i+1}. {name}" for i, name in enumerate(menu_namen)])
+
+    # Baue die Liste der zu generierenden Mahlzeiten
+    mahlzeiten_liste = []
+    if generiere_fruehstueck:
+        mahlzeiten_liste.append("Frühstück")
+    if generiere_mittagessen:
+        mahlzeiten_liste.append("Mittagessen (MIT BEILAGEN!)")
+    if generiere_abendessen:
+        mahlzeiten_liste.append("Abendessen")
+
+    mahlzeiten_text = ", ".join(mahlzeiten_liste)
+
+    # Baue die JSON-Struktur basierend auf den ausgewählten Mahlzeiten
+    json_felder = []
+    if generiere_fruehstueck:
+        json_felder.append('''      "fruehstueck": {
+        "hauptgericht": "Gericht",
+        "beilagen": ["Beilage 1", "Beilage 2"],
+        "getraenk": "Getränk"
+      }''')
+
+    if generiere_mittagessen:
+        json_felder.append('''      "mittagessen": {
+        "vorspeise": "Suppe/Vorspeise",
+        "hauptgericht": "Hauptgericht",
+        "beilagen": ["Beilage 1 (z.B. Kartoffeln)", "Beilage 2 (z.B. Gemüse)", "Beilage 3 (z.B. Salat)"],
+        "nachspeise": "Dessert",
+        "naehrwerte": {
+          "kalorien": "ca. X kcal",
+          "protein": "X g"
+        },
+        "allergene": ["Liste der Allergene"]
+      }''')
+
+    # Zwischenmahlzeit wird immer hinzugefügt wenn mindestens eine Mahlzeit generiert wird
+    json_felder.append('''      "zwischenmahlzeit": "Obst/Joghurt/etc."''')
+
+    if generiere_abendessen:
+        json_felder.append('''      "abendessen": {
+        "hauptgericht": "Gericht",
+        "beilagen": ["Beilage 1", "Beilage 2"],
+        "getraenk": "Getränk"
+      }''')
+
+    json_struktur = ",\n".join(json_felder)
 
     return f"""Du bist ein diätisch ausgebildeter Küchenmeister mit über 25 Jahren Erfahrung in der Gemeinschaftsverpflegung, spezialisiert auf Krankenhaus- und Seniorenverpflegung.
 
@@ -83,15 +140,16 @@ AUFGABE: Erstelle einen professionellen Speiseplan für {tag} (Woche {woche_nr})
 MENÜLINIEN:
 {menu_liste}
 
+ZU GENERIERENDE MAHLZEITEN: {mahlzeiten_text}
+
 WICHTIGE VORGABEN:
 - Seniorengerechte Kost: leicht verdaulich, weiche Konsistenzen wo nötig
 - Nährstoffdichte Gerichte (wichtig bei oft verringertem Appetit)
 - Abwechslungsreich und ausgewogen
-- IMMER mindestens 2-3 Beilagen zum Mittagessen (z.B. Kartoffeln/Reis/Nudeln UND Gemüse/Salat)
+{"- IMMER mindestens 2-3 Beilagen zum Mittagessen (z.B. Kartoffeln/Reis/Nudeln UND Gemüse/Salat)" if generiere_mittagessen else ""}
 - Saisonale und regionale Produkte bevorzugen
 - Klare Portionsangaben für Gemeinschaftsverpflegung (pro Person)
 - Allergenkennzeichnung
-- Pro Tag: Frühstück, Mittagessen (MIT BEILAGEN!), Abendessen + Zwischenmahlzeit
 
 ERNÄHRUNGSPHYSIOLOGISCHE ANFORDERUNGEN:
 - Ausreichend Protein (1,0-1,2g/kg Körpergewicht)
@@ -100,7 +158,7 @@ ERNÄHRUNGSPHYSIOLOGISCHE ANFORDERUNGEN:
 - Vitamin D Quellen einbauen
 - Flüssigkeitsreiche Gerichte (Suppen, Eintöpfe)
 
-WICHTIG: JEDES Mittagessen MUSS mindestens 2-3 Beilagen haben!
+{"WICHTIG: JEDES Mittagessen MUSS mindestens 2-3 Beilagen haben!" if generiere_mittagessen else ""}
 
 KRITISCH: Du MUSST mit einem JSON-Objekt antworten, das EXAKT diese Struktur hat:
 
@@ -110,28 +168,7 @@ STRUKTUR DER ANTWORT (JSON) - NUR FÜR DIESEN EINEN TAG:
   "menues": [
     {{
       "menuName": "Name der Menülinie",
-      "fruehstueck": {{
-        "hauptgericht": "Gericht",
-        "beilagen": ["Beilage 1", "Beilage 2"],
-        "getraenk": "Getränk"
-      }},
-      "mittagessen": {{
-        "vorspeise": "Suppe/Vorspeise",
-        "hauptgericht": "Hauptgericht",
-        "beilagen": ["Beilage 1 (z.B. Kartoffeln)", "Beilage 2 (z.B. Gemüse)", "Beilage 3 (z.B. Salat)"],
-        "nachspeise": "Dessert",
-        "naehrwerte": {{
-          "kalorien": "ca. X kcal",
-          "protein": "X g"
-        }},
-        "allergene": ["Liste der Allergene"]
-      }},
-      "zwischenmahlzeit": "Obst/Joghurt/etc.",
-      "abendessen": {{
-        "hauptgericht": "Gericht",
-        "beilagen": ["Beilage 1", "Beilage 2"],
-        "getraenk": "Getränk"
-      }}
+{json_struktur}
     }}
   ]
 }}
@@ -143,6 +180,7 @@ WICHTIGE JSON-REGELN:
 - Alle Klammern müssen geschlossen sein: {{ }} [ ]
 - Keine Kommentare im JSON
 - Keine Sonderzeichen oder Smart Quotes
+- Generiere NUR die angeforderten Mahlzeiten: {mahlzeiten_text}
 
 Antworte NUR mit dem return_json Tool-Call. Kein Text davor oder danach!"""
 
@@ -553,7 +591,7 @@ def fix_common_json_errors(text):
 
     return text
 
-def generiere_speiseplan_inkrementell(wochen, menulinien, menu_namen, api_key, progress_callback=None):
+def generiere_speiseplan_inkrementell(wochen, menulinien, menu_namen, api_key, progress_callback=None, generiere_fruehstueck=True, generiere_mittagessen=True, generiere_abendessen=True):
     """
     Generiert Speiseplan inkrementell (Tag für Tag) um Timeouts zu vermeiden
 
@@ -563,6 +601,9 @@ def generiere_speiseplan_inkrementell(wochen, menulinien, menu_namen, api_key, p
         menu_namen: Liste der Menünamen
         api_key: API-Schlüssel
         progress_callback: Optional - Funktion für Fortschrittsanzeige
+        generiere_fruehstueck: Ob Frühstück generiert werden soll
+        generiere_mittagessen: Ob Mittagessen generiert werden soll
+        generiere_abendessen: Ob Abendessen generiert werden soll
 
     Returns:
         Tuple von (speiseplan_data, error_message)
@@ -590,7 +631,7 @@ def generiere_speiseplan_inkrementell(wochen, menulinien, menu_namen, api_key, p
                 )
 
             # Generiere Prompt für diesen Tag
-            prompt = generiere_tages_prompt(tag_name, woche_nr, menulinien, menu_namen)
+            prompt = generiere_tages_prompt(tag_name, woche_nr, menulinien, menu_namen, generiere_fruehstueck, generiere_mittagessen, generiere_abendessen)
 
             # API-Aufruf für diesen einen Tag (mit mehreren Versuchen)
             max_retries = 3
@@ -689,15 +730,22 @@ def generiere_speiseplan_inkrementell(wochen, menulinien, menu_namen, api_key, p
                             last_error = f"Menü {idx} ist kein Dictionary"
                             continue
 
-                        # Prüfe Pflichtfelder
-                        required = ["menuName", "fruehstueck", "mittagessen", "abendessen"]
+                        # Prüfe Pflichtfelder basierend auf den ausgewählten Mahlzeiten
+                        required = ["menuName"]
+                        if generiere_fruehstueck:
+                            required.append("fruehstueck")
+                        if generiere_mittagessen:
+                            required.append("mittagessen")
+                        if generiere_abendessen:
+                            required.append("abendessen")
+
                         missing = [f for f in required if f not in menu]
                         if missing:
                             last_error = f"Menü {idx}: Fehlende Felder: {', '.join(missing)}"
                             continue
 
-                        # Prüfe Mittagessen-Struktur
-                        if "mittagessen" in menu and isinstance(menu["mittagessen"], dict):
+                        # Prüfe Mittagessen-Struktur nur wenn Mittagessen generiert werden soll
+                        if generiere_mittagessen and "mittagessen" in menu and isinstance(menu["mittagessen"], dict):
                             mittag = menu["mittagessen"]
                             if "hauptgericht" not in mittag:
                                 last_error = f"Menü {idx}: Hauptgericht fehlt"
@@ -917,80 +965,87 @@ if not api_key:
     st.info("Sie können einen API-Key unter https://console.anthropic.com/ erstellen.")
 else:
     if st.sidebar.button("🚀 Speiseplan generieren & prüfen", type="primary", use_container_width=True):
-        # Container für Fortschrittsanzeige
-        progress_placeholder = st.empty()
-        status_placeholder = st.empty()
+        # Validierung: Mindestens eine Mahlzeit muss ausgewählt sein
+        if not generiere_fruehstueck and not generiere_mittagessen and not generiere_abendessen:
+            st.error("⚠️ Bitte wählen Sie mindestens eine Mahlzeit aus!")
+        else:
+            # Container für Fortschrittsanzeige
+            progress_placeholder = st.empty()
+            status_placeholder = st.empty()
 
-        def zeige_fortschritt(nachricht):
-            """Callback für Fortschrittsanzeige"""
-            status_placeholder.info(f"🔄 {nachricht}")
+            def zeige_fortschritt(nachricht):
+                """Callback für Fortschrittsanzeige"""
+                status_placeholder.info(f"🔄 {nachricht}")
 
-        with st.spinner("⏳ Speiseplan wird erstellt (Tag für Tag)..."):
-            # Verwende inkrementelle Generierung um Timeouts zu vermeiden
-            speiseplan_data, error = generiere_speiseplan_inkrementell(
-                wochen,
-                menulinien,
-                menu_namen,
-                api_key,
-                progress_callback=zeige_fortschritt
-            )
+            with st.spinner("⏳ Speiseplan wird erstellt (Tag für Tag)..."):
+                # Verwende inkrementelle Generierung um Timeouts zu vermeiden
+                speiseplan_data, error = generiere_speiseplan_inkrementell(
+                    wochen,
+                    menulinien,
+                    menu_namen,
+                    api_key,
+                    progress_callback=zeige_fortschritt,
+                    generiere_fruehstueck=generiere_fruehstueck,
+                    generiere_mittagessen=generiere_mittagessen,
+                    generiere_abendessen=generiere_abendessen
+                )
 
-            # Lösche Fortschrittsanzeige
-            status_placeholder.empty()
+                # Lösche Fortschrittsanzeige
+                status_placeholder.empty()
 
-            if error:
-                st.error(f"❌ Fehler beim Erstellen des Speiseplans")
+                if error:
+                    st.error(f"❌ Fehler beim Erstellen des Speiseplans")
 
-                # Zeige Fehlerdetails
-                st.markdown(f"**Fehlerdetails:**")
-                st.code(error, language="text")
+                    # Zeige Fehlerdetails
+                    st.markdown(f"**Fehlerdetails:**")
+                    st.code(error, language="text")
 
-                # Debug-Informationen in Expander
-                with st.expander("🔍 Debug-Informationen und Lösungen"):
-                    st.markdown("""
-                    **Mögliche Ursachen:**
-                    1. **Ungültige API-Antwort**: Die KI hat keine valide JSON-Struktur zurückgegeben
-                    2. **API-Zeitüberschreitung**: Die Anfrage hat zu lange gedauert
-                    3. **Rate-Limiting**: Zu viele Anfragen in kurzer Zeit
-                    4. **Netzwerkprobleme**: Verbindungsfehler zur API
+                    # Debug-Informationen in Expander
+                    with st.expander("🔍 Debug-Informationen und Lösungen"):
+                        st.markdown("""
+                        **Mögliche Ursachen:**
+                        1. **Ungültige API-Antwort**: Die KI hat keine valide JSON-Struktur zurückgegeben
+                        2. **API-Zeitüberschreitung**: Die Anfrage hat zu lange gedauert
+                        3. **Rate-Limiting**: Zu viele Anfragen in kurzer Zeit
+                        4. **Netzwerkprobleme**: Verbindungsfehler zur API
 
-                    **Empfohlene Lösungen:**
-                    - ✅ **Versuchen Sie es erneut**: Manchmal hilft ein zweiter Versuch
-                    - 📉 **Reduzieren Sie die Komplexität**:
-                      - Weniger Wochen (z.B. 1 statt 2)
-                      - Weniger Menülinien (z.B. 2 statt 3)
-                    - ⏱️ **Warten Sie kurz**: Bei Rate-Limiting 1-2 Minuten warten
-                    - 🔑 **Prüfen Sie Ihren API-Key**: Stellen Sie sicher, dass er gültig ist
-                    - 🌐 **Prüfen Sie Ihre Internetverbindung**
+                        **Empfohlene Lösungen:**
+                        - ✅ **Versuchen Sie es erneut**: Manchmal hilft ein zweiter Versuch
+                        - 📉 **Reduzieren Sie die Komplexität**:
+                          - Weniger Wochen (z.B. 1 statt 2)
+                          - Weniger Menülinien (z.B. 2 statt 3)
+                        - ⏱️ **Warten Sie kurz**: Bei Rate-Limiting 1-2 Minuten warten
+                        - 🔑 **Prüfen Sie Ihren API-Key**: Stellen Sie sicher, dass er gültig ist
+                        - 🌐 **Prüfen Sie Ihre Internetverbindung**
 
-                    **Technische Details:**
-                    Das System versucht automatisch 3x jeden Tag zu generieren und repariert
-                    kleinere Strukturfehler automatisch. Wenn der Fehler weiterhin besteht,
-                    könnte ein grundlegendes Problem mit der API-Kommunikation vorliegen.
-                    """)
+                        **Technische Details:**
+                        Das System versucht automatisch 3x jeden Tag zu generieren und repariert
+                        kleinere Strukturfehler automatisch. Wenn der Fehler weiterhin besteht,
+                        könnte ein grundlegendes Problem mit der API-Kommunikation vorliegen.
+                        """)
 
-                    # Zeige letzte Konfiguration
-                    st.divider()
-                    st.markdown("**Ihre Konfiguration:**")
-                    st.write(f"- Wochen: {wochen}")
-                    st.write(f"- Menülinien: {menulinien}")
-                    st.write(f"- Menü-Namen: {', '.join(menu_namen)}")
+                        # Zeige letzte Konfiguration
+                        st.divider()
+                        st.markdown("**Ihre Konfiguration:**")
+                        st.write(f"- Wochen: {wochen}")
+                        st.write(f"- Menülinien: {menulinien}")
+                        st.write(f"- Menü-Namen: {', '.join(menu_namen)}")
 
-                    # Quick-Actions
-                    st.divider()
-                    st.markdown("**Schnellaktionen:**")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("🔄 Mit 1 Woche erneut versuchen", key="retry_1week"):
-                            st.info("Bitte setzen Sie die Wochenanzahl auf 1 in der Sidebar und klicken Sie erneut auf 'Speiseplan generieren'")
-                    with col2:
-                        if st.button("📋 Nur 1 Menülinie versuchen", key="retry_1menu"):
-                            st.info("Bitte setzen Sie die Menülinien auf 1 in der Sidebar und klicken Sie erneut auf 'Speiseplan generieren'")
-            else:
-                st.session_state['speiseplan'] = speiseplan_data
-                st.success("✅ Speiseplan erfolgreich erstellt!")
-                st.info("💡 Die Rezepte können Sie jetzt im Tab 'Rezepte' bei Bedarf generieren.")
-                st.balloons()
+                        # Quick-Actions
+                        st.divider()
+                        st.markdown("**Schnellaktionen:**")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("🔄 Mit 1 Woche erneut versuchen", key="retry_1week"):
+                                st.info("Bitte setzen Sie die Wochenanzahl auf 1 in der Sidebar und klicken Sie erneut auf 'Speiseplan generieren'")
+                        with col2:
+                            if st.button("📋 Nur 1 Menülinie versuchen", key="retry_1menu"):
+                                st.info("Bitte setzen Sie die Menülinien auf 1 in der Sidebar und klicken Sie erneut auf 'Speiseplan generieren'")
+                else:
+                    st.session_state['speiseplan'] = speiseplan_data
+                    st.success("✅ Speiseplan erfolgreich erstellt!")
+                    st.info("💡 Die Rezepte können Sie jetzt im Tab 'Rezepte' bei Bedarf generieren.")
+                    st.balloons()
 
 # Anzeige der Ergebnisse
 if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
@@ -1020,27 +1075,40 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                 
                 for menu in tag['menues']:
                     with st.expander(f"**{menu['menuName']}**", expanded=True):
-                        col1, col2, col3 = st.columns(3)
-                        
-                        with col1:
-                            st.markdown("**🌅 Frühstück**")
-                            st.write(menu['fruehstueck']['hauptgericht'])
-                            if menu['fruehstueck'].get('beilagen'):
-                                st.caption(f"mit {', '.join(menu['fruehstueck']['beilagen'])}")
-                        
-                        with col2:
-                            st.markdown("**🍽️ Mittagessen**")
-                            st.write(f"**{menu['mittagessen']['hauptgericht']}**")
-                            if menu['mittagessen'].get('beilagen'):
-                                st.caption(f"🥔 Beilagen: {', '.join(menu['mittagessen']['beilagen'])}")
-                            if menu['mittagessen'].get('naehrwerte'):
-                                st.caption(f"📊 {menu['mittagessen']['naehrwerte']['kalorien']} | Protein: {menu['mittagessen']['naehrwerte']['protein']}")
-                        
-                        with col3:
-                            st.markdown("**🌙 Abendessen**")
-                            st.write(menu['abendessen']['hauptgericht'])
-                            if menu['abendessen'].get('beilagen'):
-                                st.caption(f"mit {', '.join(menu['abendessen']['beilagen'])}")
+                        # Zähle vorhandene Mahlzeiten
+                        anzahl_mahlzeiten = sum([
+                            'fruehstueck' in menu,
+                            'mittagessen' in menu,
+                            'abendessen' in menu
+                        ])
+
+                        cols = st.columns(anzahl_mahlzeiten)
+                        col_idx = 0
+
+                        if 'fruehstueck' in menu:
+                            with cols[col_idx]:
+                                st.markdown("**🌅 Frühstück**")
+                                st.write(menu['fruehstueck']['hauptgericht'])
+                                if menu['fruehstueck'].get('beilagen'):
+                                    st.caption(f"mit {', '.join(menu['fruehstueck']['beilagen'])}")
+                            col_idx += 1
+
+                        if 'mittagessen' in menu:
+                            with cols[col_idx]:
+                                st.markdown("**🍽️ Mittagessen**")
+                                st.write(f"**{menu['mittagessen']['hauptgericht']}**")
+                                if menu['mittagessen'].get('beilagen'):
+                                    st.caption(f"🥔 Beilagen: {', '.join(menu['mittagessen']['beilagen'])}")
+                                if menu['mittagessen'].get('naehrwerte'):
+                                    st.caption(f"📊 {menu['mittagessen']['naehrwerte']['kalorien']} | Protein: {menu['mittagessen']['naehrwerte']['protein']}")
+                            col_idx += 1
+
+                        if 'abendessen' in menu:
+                            with cols[col_idx]:
+                                st.markdown("**🌙 Abendessen**")
+                                st.write(menu['abendessen']['hauptgericht'])
+                                if menu['abendessen'].get('beilagen'):
+                                    st.caption(f"mit {', '.join(menu['abendessen']['beilagen'])}")
                 
                 st.divider()
     
