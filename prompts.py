@@ -118,6 +118,19 @@ def get_rezepte_prompt(speiseplan):
                     'menu': menu['menuName']
                 })
 
+    # Dedupliziere Gerichte basierend auf Hauptgericht und Beilagen
+    # Verwende ein Dictionary mit (gericht, beilagen) als Key
+    unique_gerichte = {}
+    for gericht_info in alle_gerichte:
+        # Erstelle einen eindeutigen Key aus Gericht und sortierten Beilagen
+        key = (gericht_info['gericht'], tuple(sorted(gericht_info['beilagen'])))
+        # Speichere nur das erste Vorkommen
+        if key not in unique_gerichte:
+            unique_gerichte[key] = gericht_info
+
+    # Ersetze die Liste mit den deduplizierten Gerichten
+    alle_gerichte = list(unique_gerichte.values())
+
     gerichte_liste = "\n".join([
         f"{i+1}. {g['gericht']} mit {g['beilagen_text']}  |  Woche {g['woche']}  |  {g['tag']}  |  {g['menu']}"
         for i, g in enumerate(alle_gerichte)
