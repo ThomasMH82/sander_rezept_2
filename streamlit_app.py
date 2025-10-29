@@ -254,6 +254,29 @@ def generiere_rezepte_batch(speiseplan, api_key, batch_size=10, progress_callbac
     if not alle_gerichte:
         return None, "Keine Gerichte im Speiseplan gefunden"
 
+    # Dedupliziere Gerichte basierend auf Hauptgericht und Beilagen
+    # Verwende ein Dictionary mit (gericht, beilagen) als Key
+    unique_gerichte = {}
+    for gericht_info in alle_gerichte:
+        # Erstelle einen eindeutigen Key aus Gericht und sortierten Beilagen
+        key = (gericht_info['gericht'], tuple(sorted(gericht_info['beilagen'])))
+        # Speichere nur das erste Vorkommen
+        if key not in unique_gerichte:
+            unique_gerichte[key] = gericht_info
+
+    # Ersetze die Liste mit den deduplizierten Gerichten
+    anzahl_vorher = len(alle_gerichte)
+    alle_gerichte = list(unique_gerichte.values())
+    anzahl_nachher = len(alle_gerichte)
+
+    # Informiere über die Deduplizierung
+    if anzahl_vorher > anzahl_nachher:
+        if progress_callback:
+            progress_callback(
+                f"ℹ️ {anzahl_vorher - anzahl_nachher} doppelte Gerichte entfernt "
+                f"({anzahl_nachher} eindeutige Rezepte werden generiert)"
+            )
+
     # Teile in Batches auf
     alle_rezepte = []
     anzahl_batches = (len(alle_gerichte) + batch_size - 1) // batch_size
