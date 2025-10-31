@@ -213,10 +213,32 @@ def generiere_rezepte_batch(speiseplan, api_key, batch_size=7, progress_callback
     # Verwende optimierte Rezept-Prompt-Funktion
     prompt = get_rezepte_prompt(speiseplan)
     
+    # Debug: Zeige Prompt-Länge
+    if progress_callback:
+        progress_callback(f"Prompt-Länge: {len(prompt)} Zeichen")
+    
     rezepte_data, error = rufe_claude_api(prompt, api_key, max_tokens=10000)
     
     if error:
         return None, error
+    
+    # Validiere Struktur
+    if not rezepte_data:
+        return None, "Keine Daten von API erhalten"
+    
+    if not isinstance(rezepte_data, dict):
+        return None, f"API gab kein Dictionary zurück, sondern: {type(rezepte_data)}"
+    
+    # Debug: Speichere in Session State für Analyse
+    st.session_state['last_rezepte_raw'] = rezepte_data
+    
+    if 'rezepte' not in rezepte_data:
+        # Versuche zu reparieren falls die Struktur anders ist
+        # Manchmal gibt die API direkt eine Liste zurück
+        if isinstance(rezepte_data, list):
+            rezepte_data = {'rezepte': rezepte_data}
+        else:
+            return None, f"Rezepte-Key fehlt. Vorhandene Keys: {list(rezepte_data.keys())}"
     
     return rezepte_data, None
 
@@ -660,9 +682,17 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                     
                     if error:
                         st.error(f"❌ Fehler: {error}")
+                    elif not rezepte_data:
+                        st.error("❌ Keine Rezepte-Daten erhalten")
+                    elif 'rezepte' not in rezepte_data:
+                        st.error(f"❌ Ungültige Rezepte-Struktur. Erhaltene Keys: {list(rezepte_data.keys()) if isinstance(rezepte_data, dict) else 'Kein Dict'}")
+                        st.session_state['last_invalid_rezepte'] = rezepte_data
+                        with st.expander("🔍 Erhaltene Daten"):
+                            st.json(rezepte_data)
                     else:
                         st.session_state['rezepte'] = rezepte_data
-                        st.success(f"✅ {len(rezepte_data['rezepte'])} Rezepte erstellt!")
+                        anzahl = len(rezepte_data['rezepte']) if isinstance(rezepte_data.get('rezepte'), list) else 0
+                        st.success(f"✅ {anzahl} Rezepte erstellt!")
                         st.rerun()
 
 # ===================== DEBUG-BEREICH =====================
@@ -672,6 +702,14 @@ with st.expander("🔧 Debug-Informationen (bei Problemen öffnen)"):
     st.write(f"**Speiseplan vorhanden:** {'speiseplan' in st.session_state}")
     st.write(f"**Rezepte vorhanden:** {'rezepte' in st.session_state}")
     st.write(f"**Prüfung vorhanden:** {'pruefung' in st.session_state}")
+    
+    if 'last_rezepte_raw' in st.session_state:
+        st.markdown("### 📦 Letzte Rezepte-Raw-Daten")
+        st.json(st.session_state['last_rezepte_raw'])
+    
+    if 'last_invalid_rezepte' in st.session_state:
+        st.markdown("### ⚠️ Letzte ungültige Rezepte-Struktur")
+        st.json(st.session_state['last_invalid_rezepte'])
     
     if 'last_exception' in st.session_state:
         st.markdown("### ❌ Letzter Fehler")
