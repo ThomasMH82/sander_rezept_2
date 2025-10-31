@@ -2,7 +2,7 @@ import json
 
 """
 Prompts für den Speiseplan-Generator
-Alle Prompt-Templates zentral verwaltet
+Alle Prompt-Templates zentral verwaltet - OPTIMIERTE VERSION
 """
 
 # Einheitliche, klare Tool-Direktive – passt zu rufe_claude_api (tool_choice=return_json)
@@ -22,11 +22,16 @@ TOOL_DIRECTIVE = (
 
 def get_speiseplan_prompt(wochen, menulinien, menu_namen):
     """
-    Erstellt den Prompt für die Speiseplan-Generierung
+    Erstellt den OPTIMIERTEN Prompt für die Speiseplan-Generierung
+    MIT GARANTIERTER ABWECHSLUNG
     """
     menu_liste = "\n".join([f"{i+1}. {name}" for i, name in enumerate(menu_namen)])
-
-    # Kompaktes, eindeutiges Schema. Doppelklammern weil f-String.
+    
+    # Berechne Anzahl benötigter Gerichte
+    anzahl_tage = wochen * 7
+    anzahl_gerichte_gesamt = anzahl_tage * menulinien
+    
+    # Kompaktes, eindeutiges Schema. Doppelklammern wegen f-String.
     schema = (
         "{{\n"
         "  \"speiseplan\": {{\n"
@@ -77,50 +82,164 @@ def get_speiseplan_prompt(wochen, menulinien, menu_namen):
         "}}"
     )
 
-    return (
-        f"Du bist ein diätisch ausgebildeter Küchenmeister mit 25+ Jahren Erfahrung in der "
-        f"Gemeinschaftsverpflegung (Krankenhaus/Senioren). {TOOL_DIRECTIVE}\n\n"
-        f"AUFGABE: Erstelle einen professionellen Speiseplan für {wochen} Woche(n) mit {menulinien} Menülinie(n).\n\n"
-        f"MENÜLINIEN:\n{menu_liste}\n\n"
-        "VORGABEN:\n"
-        "- Seniorengerechte Kost, gut verträglich, ggf. weichere Konsistenzen\n"
-        "- Hohe Nährstoffdichte; Protein ca. 1,0–1,2 g/kg; Ballaststoffe gut verträglich\n"
-        "- Saisonale/regionale Produkte bevorzugt; reduzierte Salzmenge, dennoch schmackhaft\n"
-        "- Pro Tag: Frühstück, Mittagessen (mit 2–3 Beilagen), Abendessen, Zwischenmahlzeit\n"
-        "- Klare Portions-/Nährwertangaben zum Mittag; Allergenkennzeichnung\n\n"
-        "KRITISCH WICHTIG - MAXIMALE ABWECHSLUNG ERFORDERLICH:\n"
-        "ABSOLUTE REGEL: Jedes Hauptgericht darf im GESAMTEN Speiseplan NUR EIN EINZIGES MAL vorkommen!\n"
-        "- 'Gedünstetes Seelachsfilet in Dillsauce' darf nur an EINEM einzigen Tag erscheinen\n"
-        "- 'Geschmortes Hühnerfrikassee' darf nur an EINEM einzigen Tag erscheinen\n"
-        "- Wenn Dienstag 'Seelachsfilet' hat, dann NIEMALS am Mittwoch oder Donnerstag\n"
-        "- Jeder Tag MUSS komplett unterschiedliche Hauptgerichte haben\n"
-        "- Keine Wiederverwendung von Gerichten über verschiedene Tage hinweg\n\n"
-        "VIELFALT DER GERICHTE:\n"
-        "- Nutze die gesamte Bandbreite der deutschen/internationalen Küche\n"
-        "- Beispiele für Hauptgerichte: Rinderroulade, Schweinebraten, Hähnchenbrust, Scholle Müllerin, "
-        "Lachsfilet, Gulasch, Geschnetzeltes, Sauerbraten, Hackbraten, Frikadellen, Schnitzel, "
-        "Kasseler, Eisbein, Kotelett, Leber, Zunge, Fischfrikadelle, Kabeljau, etc.\n"
-        "- Variiere auch die Zubereitungsarten: gebraten, gedünstet, geschmort, gebacken, gegrillt\n"
-        "- Jeder Wochentag soll wie ein komplett neues Menü wirken\n\n"
-        "BEILAGEN-VARIATION:\n"
-        "- Auch Beilagen sollen variieren zwischen den Tagen\n"
-        "- Nicht jeden Tag 'Petersilienkartoffeln' - wechsle ab mit: Salzkartoffeln, Kartoffelpüree, "
-        "Bratkartoffeln, Kroketten, Reis, Nudeln, Spätzle, Knödel, etc.\n"
-        "- Gemüse variieren: Möhren, Erbsen, Blumenkohl, Brokkoli, Bohnen, Rotkohl, Wirsing, Spinat, etc.\n"
-        "- Salate abwechseln: Blattsalat, Gurkensalat, Tomatensalat, Krautsalat, Kartoffelsalat, etc.\n\n"
-        "MENÜLINIEN-UNTERSCHIEDE:\n"
-        "- Bei mehreren Menülinien am selben Tag: Komplett verschiedene Gerichte\n"
-        "- Wenn Menü 1 Fisch hat, dann Menü 2 Fleisch oder vegetarisch\n"
-        "- Keine ähnlichen Gerichte zwischen den Menülinien (nicht beide Schnitzel, nicht beide Fisch)\n\n"
-        "BEILAGENBEISPIELE:\n"
-        "- Salzkartoffeln, Buttergemüse, gemischter Salat\n"
-        "- Reis, Ratatouille, Gurkensalat\n"
-        "- Spätzle, Rotkohl, grüner Salat\n"
-        "- Kartoffelpüree, Erbsen-Möhren-Gemüse, Tomatensalat\n\n"
-        "ANTWORT-SCHEMA (JSON-OBJEKT):\n"
-        f"{schema}\n"
-        "HINWEIS: Gib die realen Inhalte vollständig zurück; das Schema ist nur die Struktur."
-    )
+    return f"""Du bist ein diätisch ausgebildeter Küchenmeister mit 25+ Jahren Erfahrung in der Gemeinschaftsverpflegung (Krankenhaus/Senioren). {TOOL_DIRECTIVE}
+
+╔═══════════════════════════════════════════════════════════════════════════╗
+║  🚫 ABSOLUTE REGEL #1 - KEINE WIEDERHOLUNGEN VON HAUPTGERICHTEN 🚫       ║
+║                                                                             ║
+║  Du musst {anzahl_gerichte_gesamt} KOMPLETT UNTERSCHIEDLICHE Hauptgerichte erstellen!        ║
+║                                                                             ║
+║  ❌ VERBOTEN: "Seelachsfilet" an Montag UND Dienstag                      ║
+║  ❌ VERBOTEN: "Hühnerfrikassee" mehr als 1x im gesamten Plan              ║
+║  ✅ RICHTIG: Jeden Tag ein völlig anderes Hauptgericht                    ║
+║                                                                             ║
+║  BEVOR DU ANTWORTEST - PRÜFE:                                              ║
+║  □ Kommt irgendein Hauptgericht 2x vor? → FEHLER! → NEUSTART!            ║
+║  □ Sind alle {anzahl_gerichte_gesamt} Hauptgerichte unterschiedlich? → OK!              ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+AUFGABE: Erstelle einen professionellen Speiseplan für {wochen} Woche(n) mit {menulinien} Menülinie(n).
+
+MENÜLINIEN:
+{menu_liste}
+
+═══════════════════════════════════════════════════════════════════════════
+SCHRITT-FÜR-SCHRITT VORGEHEN:
+═══════════════════════════════════════════════════════════════════════════
+
+SCHRITT 1: ERSTELLE ZUNÄCHST EINE LISTE MIT {anzahl_gerichte_gesamt} VERSCHIEDENEN HAUPTGERICHTEN
+
+Beispiel-Gerichte zur Inspiration (nutze diese und viele weitere!):
+- Rinderroulade mit Rotkohl
+- Schweinebraten mit Knödeln
+- Hähnchenbrust in Champignonsauce
+- Scholle Müllerin Art
+- Lachsfilet mit Kräuterbutter
+- Gulasch mit Spätzle
+- Geschnetzeltes Züricher Art
+- Sauerbraten mit dunkler Soße
+- Hackbraten mit Bratensoße
+- Hausgemachte Frikadellen
+- Wiener Schnitzel paniert
+- Kasseler mit Sauerkraut
+- Eisbein mit Erbspüree
+- Schweinekotelett gegrillt
+- Kalbsleber in Zwiebelsoße
+- Ochsenschwanz geschmort
+- Rinderbrust gekocht
+- Zander gebraten
+- Kabeljaufilet gedünstet
+- Seelachsfilet in Dillsauce
+- Matjeshering nach Hausfrauenart
+- Forelle blau
+- Putenschnitzel natur
+- Hühnerfrikassee klassisch
+- Gänsekeule geschmort
+- Entenbrust rosa gebraten
+- Hackfleischpfanne mediterran
+- Königsberger Klopse
+- Leberknödel in Brühe
+- Nürnberger Rostbratwürste
+- Currywurst hausgemacht
+- Tafelspitz mit Meerrettichsauce
+- Fischstäbchen hausgemacht
+- Backfisch in Biersauce
+- Heringssalat klassisch
+- Matjesbrötchen nordisch
+- Vegetarische Gemüsepfanne
+- Käsespätzle überbacken
+- Gemüselasagne
+- Gefüllte Paprika mit Hackfleisch
+- Rinderschmorbraten
+- Schweineschnitzel Wiener Art
+- Schollenfilet gedünstet
+- Rotbarschfilet mediterran
+- Hähnchenschenkel gegrillt
+- Putengeschnetzeltes
+- Kalbsschnitzel paniert
+- Rindergeschnetzeltes
+- Schweinegulasch ungarisch
+
+WICHTIG: Jedes dieser Gerichte darf NUR EINMAL im gesamten Plan vorkommen!
+
+═══════════════════════════════════════════════════════════════════════════
+
+SCHRITT 2: WEISE JEDEM TAG EIN EINZIGARTIGES GERICHT ZU
+
+Woche 1:
+- Montag, Menü 1: [Gericht 1]
+- Montag, Menü 2: [Gericht 2] ← MUSS komplett anders sein als Gericht 1!
+- Dienstag, Menü 1: [Gericht 3] ← MUSS komplett anders sein als Gericht 1+2!
+- Dienstag, Menü 2: [Gericht 4] ← MUSS komplett anders sein als Gericht 1+2+3!
+... und so weiter für alle {anzahl_gerichte_gesamt} Gerichte!
+
+═══════════════════════════════════════════════════════════════════════════
+
+SCHRITT 3: VARIIERE AUCH DIE BEILAGEN
+
+Kartoffelvariationen (abwechseln!):
+- Salzkartoffeln, Petersilienkartoffeln, Kartoffelpüree, Bratkartoffeln, 
+  Kroketten, Kartoffelgratin, Rosmarinkartoffeln, Herzoginkartoffeln
+
+Weitere Beilagen:
+- Butterreis, Basmatireis, Risotto, Nudeln, Spätzle, Knödel, Semmelknödel,
+  Schupfnudeln, Gnocchi, Polenta
+
+Gemüse (täglich anders!):
+- Möhren, Erbsen, Blumenkohl, Brokkoli, Bohnen, Rotkohl, Wirsing, 
+  Spinat, Rosenkohl, Kohlrabi, Schwarzwurzeln, Mangold, Fenchel
+
+Salate (täglich anders!):
+- Blattsalat, Gurkensalat, Tomatensalat, Krautsalat, Kartoffelsalat,
+  Bohnensalat, Möhrensalat, Feldsalat, Radieschensalat
+
+═══════════════════════════════════════════════════════════════════════════
+
+NEGATIVBEISPIEL - SO NICHT!
+═══════════════════════════════════════════════════════════════════════════
+❌ FALSCH:
+Montag: Seelachsfilet mit Petersilienkartoffeln
+Dienstag: Seelachsfilet mit Petersilienkartoffeln ← FEHLER! Wiederholung!
+Mittwoch: Seelachsfilet mit Petersilienkartoffeln ← FEHLER! Wiederholung!
+
+✅ RICHTIG:
+Montag: Seelachsfilet mit Petersilienkartoffeln
+Dienstag: Rinderroulade mit Salzkartoffeln
+Mittwoch: Hähnchenbrust mit Butterreis
+
+═══════════════════════════════════════════════════════════════════════════
+
+WEITERE VORGABEN:
+═══════════════════════════════════════════════════════════════════════════
+- Seniorengerechte Kost, gut verträglich, ggf. weichere Konsistenzen
+- Hohe Nährstoffdichte; Protein ca. 1,0–1,2 g/kg; Ballaststoffe gut verträglich
+- Saisonale/regionale Produkte bevorzugt; reduzierte Salzmenge, dennoch schmackhaft
+- Pro Tag: Frühstück, Mittagessen (mit 3 Beilagen), Abendessen, Zwischenmahlzeit
+- Klare Portions-/Nährwertangaben zum Mittag; Allergenkennzeichnung
+
+BEI MEHREREN MENÜLINIEN AM SELBEN TAG:
+- Komplett verschiedene Gerichte wählen
+- Wenn Menü 1 Fisch hat → Menü 2 Fleisch oder vegetarisch
+- Nicht beide Schnitzel, nicht beide Fisch, nicht beide ähnlich
+
+═══════════════════════════════════════════════════════════════════════════
+FINALE KONTROLLE VOR DEM ABSENDEN:
+═══════════════════════════════════════════════════════════════════════════
+Gehe jeden Tag durch und stelle sicher:
+□ Montag Menü 1 ≠ Montag Menü 2
+□ Montag Menü 1 ≠ Dienstag Menü 1
+□ Montag Menü 1 ≠ Dienstag Menü 2
+□ ... und so weiter für ALLE {anzahl_gerichte_gesamt} Kombinationen
+
+WENN EIN GERICHT 2x VORKOMMT → BEGINNE VON VORNE!
+
+═══════════════════════════════════════════════════════════════════════════
+
+ANTWORT-SCHEMA (JSON-OBJEKT):
+{schema}
+
+HINWEIS: Gib die realen Inhalte vollständig zurück; das Schema ist nur die Struktur.
+"""
 
 
 def get_rezepte_prompt(speiseplan):
@@ -219,6 +338,7 @@ def get_rezepte_prompt(speiseplan):
 def get_pruefung_prompt(speiseplan):
     """
     Erstellt den Prompt für die Qualitätsprüfung
+    MIT EXPLIZITER PRÜFUNG AUF WIEDERHOLUNGEN
     """
     plan_json = json.dumps(speiseplan, ensure_ascii=False)
 
@@ -227,6 +347,11 @@ def get_pruefung_prompt(speiseplan):
         "  \"gesamtbewertung\": \"sehr gut | gut | zufriedenstellend | verbesserungswürdig\",\n"
         "  \"punktzahl\": \"X/10\",\n"
         "  \"positiveAspekte\": [\"Aspekt 1\", \"Aspekt 2\"],\n"
+        "  \"abwechslungspruefung\": {{\n"
+        "    \"wiederholungen\": [\"Liste aller wiederholten Hauptgerichte mit Angabe der Tage\"],\n"
+        "    \"bewertung\": \"Bewertung der Abwechslung (KRITISCH wenn Wiederholungen vorhanden!)\",\n"
+        "    \"anzahlEinzigartigerGerichte\": \"X von Y Gerichten sind einzigartig\"\n"
+        "  }},\n"
         "  \"verbesserungsvorschlaege\": [\n"
         "    {{\n"
         "      \"bereich\": \"z.B. Woche 1, Tag 2, Menü 1\",\n"
@@ -250,15 +375,30 @@ def get_pruefung_prompt(speiseplan):
     )
 
     return (
-        f"Du bist ein diätisch ausgebildeter Küchenmeister (30+ Jahre) für Senioren/ Krankenhaus/ GV. "
+        f"Du bist ein diätisch ausgebildeter Küchenmeister (30+ Jahre) für Senioren/Krankenhaus/GV. "
         f"{TOOL_DIRECTIVE}\n\n"
-        "AUFGABE: Prüfe den folgenden Speiseplan auf\n"
-        "1) ernährungsphysiologische Ausgewogenheit, 2) Seniorengerechtigkeit, 3) Praktikabilität, "
-        "4) Abwechslung/Attraktivität, 5) Nährstoffdichte/-verteilung, 6) Verträglichkeit/Konsistenz, "
-        "7) DGE-Konformität, 8) ausreichende Beilagen.\n\n"
+        "AUFGABE: Prüfe den folgenden Speiseplan auf\n\n"
+        "═══════════════════════════════════════════════════════════════════════════\n"
+        "PRIORITÄT 1 - ABWECHSLUNGSPRÜFUNG:\n"
+        "═══════════════════════════════════════════════════════════════════════════\n"
+        "- Gehe durch ALLE Hauptgerichte im gesamten Speiseplan\n"
+        "- Liste ALLE Gerichte auf, die mehr als 1x vorkommen\n"
+        "- Gib an: 'Seelachsfilet in Dillsauce' kommt vor am: Montag Menü 1, Dienstag Menü 1, ...\n"
+        "- Wenn IRGENDEIN Gericht wiederholt wird → Gesamtbewertung maximal 'verbesserungswürdig'\n"
+        "- Wenn mehr als 3 Gerichte wiederholt werden → Gesamtbewertung 'unzureichend'\n\n"
+        "WEITERE PRÜFPUNKTE:\n"
+        "2) Ernährungsphysiologische Ausgewogenheit\n"
+        "3) Seniorengerechtigkeit\n"
+        "4) Praktikabilität\n"
+        "5) Attraktivität\n"
+        "6) Nährstoffdichte/-verteilung\n"
+        "7) Verträglichkeit/Konsistenz\n"
+        "8) DGE-Konformität\n"
+        "9) Ausreichende Beilagen\n\n"
         "SPEISEPLAN (JSON):\n"
         f"{plan_json}\n\n"
         "ANTWORT-SCHEMA (JSON-OBJEKT):\n"
         f"{schema}\n"
-        "HINWEIS: Nur strukturierte Bewertung nach Schema zurückgeben."
+        "HINWEIS: Nur strukturierte Bewertung nach Schema zurückgeben. "
+        "Sei besonders kritisch bei Wiederholungen von Hauptgerichten!"
     )
