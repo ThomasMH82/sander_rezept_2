@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import json
 import re
+from datetime import datetime
 from io import BytesIO
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -73,11 +74,33 @@ def rufe_claude_api(prompt, api_key, max_tokens=16000):
         
         data = response.json()
         
+        # Debug: Zeige Antwort-Struktur in Session State
+        if 'debug_responses' not in st.session_state:
+            st.session_state['debug_responses'] = []
+        st.session_state['debug_responses'].append({
+            'timestamp': str(datetime.now()),
+            'has_content': 'content' in data,
+            'content_blocks': len(data.get('content', [])) if 'content' in data else 0
+        })
+        
         # Extrahiere JSON aus Tool-Use Response
         if 'content' in data:
             for block in data['content']:
                 if block.get('type') == 'tool_use' and block.get('name') == 'return_json':
-                    return block['input']['input'], None
+                    # Versuche verschiedene Strukturen
+                    try:
+                        # Variante 1: block['input']['input']
+                        if 'input' in block and isinstance(block['input'], dict) and 'input' in block['input']:
+                            return block['input']['input'], None
+                        # Variante 2: block['input'] ist direkt das Objekt
+                        elif 'input' in block and isinstance(block['input'], dict):
+                            return block['input'], None
+                        else:
+                            st.warning(f"⚠️ Unerwartete Tool-Response-Struktur: {list(block.keys())}")
+                            # Speichere für Debug
+                            st.session_state['last_tool_response'] = block
+                    except KeyError as e:
+                        return None, f"Tool-Response-Struktur-Fehler: {e}. Keys: {list(block.keys())}"
         
         # Fallback: Versuche Text-Content zu parsen
         if 'content' in data and len(data['content']) > 0:
@@ -88,6 +111,10 @@ def rufe_claude_api(prompt, api_key, max_tokens=16000):
                 try:
                     return json.loads(cleaned), None
                 except json.JSONDecodeError as e:
+                    st.session_state['last_json_error'] = {
+                        'error': str(e),
+                        'text': text_content[:500]
+                    }
                     return None, f"JSON-Parsing fehlgeschlagen: {e}"
         
         return None, "Keine gültige Antwort von API"
@@ -97,6 +124,10 @@ def rufe_claude_api(prompt, api_key, max_tokens=16000):
     except requests.exceptions.RequestException as e:
         return None, f"API-Fehler: {str(e)}"
     except Exception as e:
+        # Bessere Fehlerausgabe
+        import traceback
+        error_details = traceback.format_exc()
+        st.session_state['last_exception'] = error_details
         return None, f"Unerwarteter Fehler: {str(e)}"
 
 
@@ -633,3 +664,28 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                         st.session_state['rezepte'] = rezepte_data
                         st.success(f"✅ {len(rezepte_data['rezepte'])} Rezepte erstellt!")
                         st.rerun()
+
+# ===================== DEBUG-BEREICH =====================
+st.divider()
+with st.expander("🔧 Debug-Informationen (bei Problemen öffnen)"):
+    st.markdown("### Session State")
+    st.write(f"**Speiseplan vorhanden:** {'speiseplan' in st.session_state}")
+    st.write(f"**Rezepte vorhanden:** {'rezepte' in st.session_state}")
+    st.write(f"**Prüfung vorhanden:** {'pruefung' in st.session_state}")
+    
+    if 'last_exception' in st.session_state:
+        st.markdown("### ❌ Letzter Fehler")
+        st.code(st.session_state['last_exception'], language="python")
+    
+    if 'last_tool_response' in st.session_state:
+        st.markdown("### 🔧 Letzte Tool-Response")
+        st.json(st.session_state['last_tool_response'])
+    
+    if 'last_json_error' in st.session_state:
+        st.markdown("### 📝 Letzter JSON-Parse-Fehler")
+        st.json(st.session_state['last_json_error'])
+    
+    if 'debug_responses' in st.session_state and st.session_state['debug_responses']:
+        st.markdown("### 📊 API-Response-Historie")
+        for i, resp in enumerate(st.session_state['debug_responses'][-3:], 1):
+            st.write(f"{i}. {resp}")
