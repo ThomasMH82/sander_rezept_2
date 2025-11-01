@@ -27,9 +27,10 @@ API_TIMEOUT = 180
 
 # ===================== API-FUNKTIONEN =====================
 
-def rufe_claude_api(prompt, api_key, max_tokens=16000):
+def rufe_claude_api(prompt, api_key, max_tokens=16000, max_retries=3):
     """
     Ruft die Claude API mit Tool-Use auf (return_json)
+    Mit automatischem Retry bei Überlastung
     """
     if not api_key:
         return None, "Kein API-Key vorhanden"
@@ -64,15 +65,54 @@ def rufe_claude_api(prompt, api_key, max_tokens=16000):
         "tool_choice": {"type": "tool", "name": "return_json"}
     }
     
-    try:
-        response = requests.post(
-            API_BASE_URL,
-            headers=headers,
-            json=payload,
-            timeout=API_TIMEOUT
-        )
-        response.raise_for_status()
+    # Retry-Schleife mit Exponential Backoff
+    import time
+    for versuch in range(max_retries):
+        try:
+            response = requests.post(
+                API_BASE_URL,
+                headers=headers,
+                json=payload,
+                timeout=API_TIMEOUT
+            )
+            
+            # Bei Erfolg: Weiter wie bisher
+            if response.status_code == 200:
+                break
+            
+            # Bei Überlastung (529) oder Rate Limit (429): Retry
+            elif response.status_code in [429, 529]:
+                wartezeit = (2 ** versuch) * 2  # Exponential: 2s, 4s, 8s
+                if versuch < max_retries - 1:  # Nicht beim letzten Versuch
+                    st.warning(f"⏳ API überlastet (Fehler {response.status_code}). Warte {wartezeit}s und versuche es erneut... (Versuch {versuch + 1}/{max_retries})")
+                    time.sleep(wartezeit)
+                    continue
+                else:
+                    return None, f"API überlastet nach {max_retries} Versuchen. Bitte später erneut versuchen."
+            
+            # Bei anderen Fehlern: Sofort abbrechen
+            else:
+                response.raise_for_status()
         
+        except requests.exceptions.Timeout:
+            if versuch < max_retries - 1:
+                st.warning(f"⏳ Timeout. Versuche erneut... (Versuch {versuch + 1}/{max_retries})")
+                time.sleep(2)
+                continue
+            return None, "API-Timeout - Anfrage dauerte zu lange"
+        
+        except requests.exceptions.RequestException as e:
+            if versuch < max_retries - 1 and "529" in str(e):
+                wartezeit = (2 ** versuch) * 2
+                st.warning(f"⏳ API überlastet. Warte {wartezeit}s... (Versuch {versuch + 1}/{max_retries})")
+                time.sleep(wartezeit)
+                continue
+            return None, f"API-Fehler: {str(e)}"
+    
+    # Nach erfolgreicher Response oder Fehler
+    try:
+    # Nach erfolgreicher Response oder Fehler
+    try:
         data = response.json()
         
         # Debug: Zeige Antwort-Struktur in Session State
@@ -120,10 +160,6 @@ def rufe_claude_api(prompt, api_key, max_tokens=16000):
         
         return None, "Keine gültige Antwort von API"
         
-    except requests.exceptions.Timeout:
-        return None, "API-Timeout - Anfrage dauerte zu lange"
-    except requests.exceptions.RequestException as e:
-        return None, f"API-Fehler: {str(e)}"
     except Exception as e:
         # Bessere Fehlerausgabe
         import traceback
@@ -653,6 +689,29 @@ if st.button("🚀 Speiseplan generieren", type="primary", use_container_width=T
             
             if error:
                 st.error(f"❌ Fehler: {error}")
+                
+                # Hilfreiche Tipps bei bestimmten Fehlern
+                if "529" in str(error) or "überlastet" in str(error).lower():
+                    st.info("""
+                    💡 **API überlastet - Was tun?**
+                    
+                    Die Anthropic API ist momentan stark ausgelastet. Probieren Sie:
+                    
+                    1. ⏳ **Warten Sie 1-2 Minuten** und versuchen Sie es erneut
+                    2. 🕐 **Andere Tageszeit**: Weniger Last außerhalb der Stoßzeiten (z.B. nachts)
+                    3. 📉 **Kleinerer Plan**: Reduzieren Sie auf 1 Woche oder 1 Menülinie
+                    4. 🔄 **Automatische Wiederholung**: Die App versucht es bereits 3x automatisch
+                    
+                    Dies ist ein temporäres Problem auf Seiten von Anthropic, nicht Ihrer App!
+                    """)
+                elif "timeout" in str(error).lower():
+                    st.info("""
+                    💡 **Timeout - Was tun?**
+                    
+                    1. ⏳ Warten Sie einen Moment und versuchen Sie es erneut
+                    2. 📉 Reduzieren Sie die Komplexität (weniger Wochen/Menülinien)
+                    3. 🌐 Prüfen Sie Ihre Internetverbindung
+                    """)
             else:
                 st.session_state['speiseplan'] = speiseplan_data
                 
