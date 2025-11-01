@@ -20,16 +20,81 @@ TOOL_DIRECTIVE = (
     "Kein Text vor oder nach dem JSON-Objekt."
 )
 
-def get_speiseplan_prompt(wochen, menulinien, menu_namen):
+def get_speiseplan_prompt(wochen, menulinien, menu_namen, produktliste=None, produktlisten_prozent=0):
     """
     Erstellt den OPTIMIERTEN Prompt für die Speiseplan-Generierung
     MIT GARANTIERTER ABWECHSLUNG
+    
+    Args:
+        wochen: Anzahl Wochen
+        menulinien: Anzahl Menülinien
+        menu_namen: Liste der Menünamen
+        produktliste: Optional - Liste verfügbarer Produkte
+        produktlisten_prozent: 0-100, wie viel % aus Liste stammen soll
     """
     menu_liste = "\n".join([f"{i+1}. {name}" for i, name in enumerate(menu_namen)])
     
     # Berechne Anzahl benötigter Gerichte
     anzahl_tage = wochen * 7
     anzahl_gerichte_gesamt = anzahl_tage * menulinien
+    
+    # Produktlisten-Anweisungen
+    produktlisten_text = ""
+    if produktliste and produktlisten_prozent > 0:
+        produkte_string = "\n".join([f"- {p}" for p in produktliste[:100]])  # Max 100 anzeigen
+        if len(produktliste) > 100:
+            produkte_string += f"\n... und {len(produktliste) - 100} weitere"
+        
+        if produktlisten_prozent == 100:
+            produktlisten_text = f"""
+╔═══════════════════════════════════════════════════════════════════════════╗
+║  📦 PRODUKTLISTE - STRIKTE VERWENDUNG (100%)                              ║
+║                                                                             ║
+║  Du MUSST AUSSCHLIESSLICH Produkte aus der folgenden Liste verwenden!     ║
+║  KEINE anderen Zutaten sind erlaubt!                                       ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+VERFÜGBARE PRODUKTE ({len(produktliste)} Artikel):
+{produkte_string}
+
+KRITISCH: Verwende NUR diese Produkte! Keine Ausnahmen!
+"""
+        elif produktlisten_prozent >= 80:
+            produktlisten_text = f"""
+╔═══════════════════════════════════════════════════════════════════════════╗
+║  📦 PRODUKTLISTE - BEVORZUGTE VERWENDUNG ({produktlisten_prozent}%)                      ║
+║                                                                             ║
+║  Verwende HAUPTSÄCHLICH Produkte aus der Liste.                            ║
+║  Nur bei Bedarf andere Standardzutaten verwenden.                          ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+VERFÜGBARE PRODUKTE ({len(produktliste)} Artikel):
+{produkte_string}
+
+WICHTIG: Mindestens {produktlisten_prozent}% aller Zutaten müssen aus dieser Liste stammen!
+"""
+        elif produktlisten_prozent >= 50:
+            produktlisten_text = f"""
+═══════════════════════════════════════════════════════════════════════════
+📦 PRODUKTLISTE - AUSGEWOGENE VERWENDUNG ({produktlisten_prozent}%)
+═══════════════════════════════════════════════════════════════════════════
+
+VERFÜGBARE PRODUKTE ({len(produktliste)} Artikel):
+{produkte_string}
+
+Ziel: Ca. {produktlisten_prozent}% der Zutaten aus dieser Liste, Rest Standard-Zutaten.
+"""
+        else:
+            produktlisten_text = f"""
+═══════════════════════════════════════════════════════════════════════════
+📦 PRODUKTLISTE - FLEXIBLE VERWENDUNG ({produktlisten_prozent}%)
+═══════════════════════════════════════════════════════════════════════════
+
+VERFÜGBARE PRODUKTE ({len(produktliste)} Artikel):
+{produkte_string}
+
+Empfehlung: Nutze diese Produkte wo sinnvoll, aber freie Rezeptgestaltung hat Priorität.
+"""
     
     # Kompaktes, eindeutiges Schema. Doppelklammern wegen f-String.
     schema = (
@@ -97,6 +162,8 @@ def get_speiseplan_prompt(wochen, menulinien, menu_namen):
 ║  □ Kommt irgendein Hauptgericht 2x vor? → FEHLER! → NEUSTART!            ║
 ║  □ Sind alle {anzahl_gerichte_gesamt} Hauptgerichte unterschiedlich? → OK!              ║
 ╚═══════════════════════════════════════════════════════════════════════════╝
+
+{produktlisten_text}
 
 AUFGABE: Erstelle einen professionellen Speiseplan für {wochen} Woche(n) mit {menulinien} Menülinie(n).
 
@@ -242,9 +309,14 @@ HINWEIS: Gib die realen Inhalte vollständig zurück; das Schema ist nur die Str
 """
 
 
-def get_rezepte_prompt(speiseplan):
+def get_rezepte_prompt(speiseplan, produktliste=None, produktlisten_prozent=0):
     """
     Erstellt den Prompt für die Rezept-Generierung
+    
+    Args:
+        speiseplan: Der generierte Speiseplan
+        produktliste: Optional - Liste verfügbarer Produkte
+        produktlisten_prozent: 0-100, wie viel % aus Liste stammen soll
     """
     alle_gerichte = []
     for woche in speiseplan['speiseplan']['wochen']:
@@ -279,6 +351,51 @@ def get_rezepte_prompt(speiseplan):
         for i, g in enumerate(alle_gerichte)
     ])
     anzahl_gerichte = len(alle_gerichte)
+    
+    # Produktlisten-Anweisungen für Rezepte
+    produktlisten_text = ""
+    if produktliste and produktlisten_prozent > 0:
+        produkte_string = "\n".join([f"- {p}" for p in produktliste[:100]])
+        if len(produktliste) > 100:
+            produkte_string += f"\n... und {len(produktliste) - 100} weitere"
+        
+        if produktlisten_prozent == 100:
+            produktlisten_text = f"""
+╔═══════════════════════════════════════════════════════════════════════════╗
+║  📦 ZUTATEN NUR AUS PRODUKTLISTE (100%)                                   ║
+║                                                                             ║
+║  ALLE Zutaten MÜSSEN aus der folgenden Liste stammen!                     ║
+║  Verwende KEINE anderen Produkte oder Zutaten!                            ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+VERFÜGBARE PRODUKTE ({len(produktliste)} Artikel):
+{produkte_string}
+
+KRITISCH: Jede Zutat im Rezept muss aus dieser Liste sein!
+"""
+        elif produktlisten_prozent >= 80:
+            produktlisten_text = f"""
+═══════════════════════════════════════════════════════════════════════════
+📦 ZUTATEN HAUPTSÄCHLICH AUS PRODUKTLISTE ({produktlisten_prozent}%)
+═══════════════════════════════════════════════════════════════════════════
+
+VERFÜGBARE PRODUKTE ({len(produktliste)} Artikel):
+{produkte_string}
+
+WICHTIG: Mindestens {produktlisten_prozent}% der Zutaten (nach Gewicht) müssen aus dieser Liste sein!
+Nur Gewürze, Öl und kleine Hilfszutaten dürfen zusätzlich verwendet werden.
+"""
+        else:
+            produktlisten_text = f"""
+═══════════════════════════════════════════════════════════════════════════
+📦 VERFÜGBARE PRODUKTE - Verwendung empfohlen ({produktlisten_prozent}%)
+═══════════════════════════════════════════════════════════════════════════
+
+VERFÜGBARE PRODUKTE ({len(produktliste)} Artikel):
+{produkte_string}
+
+Nutze diese Produkte bevorzugt, aber ergänze nach Bedarf mit Standard-Zutaten.
+"""
 
     schema = (
         "{{\n"
@@ -322,6 +439,7 @@ def get_rezepte_prompt(speiseplan):
 
     return (
         f"Du bist ein Küchenmeister für Gemeinschaftsverpflegung. {TOOL_DIRECTIVE}\n\n"
+        f"{produktlisten_text}\n\n"
         f"AUFGABE: Erstelle {anzahl_gerichte} detaillierte Rezepte für folgende Gerichte:\n\n"
         f"{gerichte_liste}\n\n"
         "ANFORDERUNGEN:\n"
@@ -402,3 +520,4 @@ def get_pruefung_prompt(speiseplan):
         "HINWEIS: Nur strukturierte Bewertung nach Schema zurückgeben. "
         "Sei besonders kritisch bei Wiederholungen von Hauptgerichten!"
     )
+    
