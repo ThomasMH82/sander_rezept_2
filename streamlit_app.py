@@ -15,7 +15,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 # WICHTIG: Importiere die optimierten Prompts!
-from prompts import get_speiseplan_prompt, get_rezepte_prompt, get_pruefung_prompt
+from prompts import get_speiseplan_prompt, get_rezepte_prompt, get_pruefung_prompt, TOOL_DIRECTIVE
 
 st.set_page_config(page_title="Speiseplan-Generator", layout="wide", page_icon="👨‍🍳")
 
