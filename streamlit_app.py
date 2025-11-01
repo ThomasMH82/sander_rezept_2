@@ -217,7 +217,220 @@ def generiere_speiseplan(wochen, menulinien, menu_namen, api_key, produktliste=N
     return speiseplan, None
 
 
-def generiere_rezepte_batch(speiseplan, api_key, produktliste=None, produktlisten_prozent=0, batch_size=7, progress_callback=None):
+def generiere_einzelnes_rezept(gericht_info, produktliste=None, produktlisten_prozent=0, api_key=None):
+    """
+    Generiert ein einzelnes Rezept
+    
+    Args:
+        gericht_info: Dict mit 'gericht', 'beilagen', 'woche', 'tag', 'menu'
+        produktliste: Optional - Verfügbare Produkte
+        produktlisten_prozent: 0-100
+        api_key: API-Key
+    
+    Returns:
+        (rezept_dict, error)
+    """
+    # Produktlisten-Text für einzelnes Rezept
+    produktlisten_text = ""
+    if produktliste and produktlisten_prozent > 0:
+        # Limitiere auf 50 Produkte für einzelne Rezepte
+        liste = produktliste[:50] if len(produktliste) > 50 else produktliste
+        produkte_string = "\n".join([f"- {p}" for p in liste])
+        
+        if produktlisten_prozent == 100:
+            produktlisten_text = f"""
+VERFÜGBARE PRODUKTE ({len(liste)} Artikel - STRIKTE VERWENDUNG):
+{produkte_string}
+
+KRITISCH: Verwende NUR Produkte aus dieser Liste!
+"""
+        elif produktlisten_prozent >= 80:
+            produktlisten_text = f"""
+VERFÜGBARE PRODUKTE ({len(liste)} Artikel - {produktlisten_prozent}% Verwendung):
+{produkte_string}
+
+WICHTIG: Mindestens {produktlisten_prozent}% der Zutaten müssen aus dieser Liste sein!
+"""
+        else:
+            produktlisten_text = f"""
+VERFÜGBARE PRODUKTE ({len(liste)} Artikel - empfohlene Verwendung):
+{produkte_string}
+
+Nutze diese Produkte bevorzugt, ergänze nach Bedarf.
+"""
+    
+    # Kompakter Prompt für einzelnes Rezept
+    beilagen_text = ', '.join(gericht_info['beilagen']) if gericht_info['beilagen'] else "ohne Beilagen"
+    
+    prompt = f"""Du bist ein Küchenmeister für Gemeinschaftsverpflegung. {TOOL_DIRECTIVE}
+
+{produktlisten_text}
+
+AUFGABE: Erstelle EIN detailliertes Rezept für:
+
+**{gericht_info['gericht']} mit {beilagen_text}**
+- Für: {gericht_info['menu']} | {gericht_info['tag']}, Woche {gericht_info['woche']}
+
+ANFORDERUNGEN:
+- Rezept für 10 Personen
+- Mengenangaben in g/ml
+- Detaillierte Zubereitungsschritte für Hauptgericht UND alle Beilagen
+- Nährwerte pro Portion
+- Allergenkennzeichnung
+- Praktische Tipps für die Großküche
+
+ANTWORT-SCHEMA (JSON-OBJEKT):
+{{
+  "name": "{gericht_info['gericht']} mit {beilagen_text}",
+  "woche": {gericht_info['woche']},
+  "tag": "{gericht_info['tag']}",
+  "menu": "{gericht_info['menu']}",
+  "portionen": 10,
+  "zeiten": {{
+    "vorbereitung": "X Minuten",
+    "garzeit": "X Minuten",
+    "gesamt": "X Minuten"
+  }},
+  "zutaten": [
+    {{ "name": "Zutat", "menge": "X g/ml", "hinweis": "Optional" }}
+  ],
+  "zubereitung": [
+    "Schritt 1 ausführlich beschrieben",
+    "Schritt 2 ausführlich beschrieben"
+  ],
+  "naehrwerte": {{
+    "kalorien": "X kcal",
+    "protein": "X g",
+    "fett": "X g",
+    "kohlenhydrate": "X g",
+    "ballaststoffe": "X g"
+  }},
+  "allergene": ["Allergen1", "Allergen2"],
+  "tipps": ["Tipp 1 für Großküche", "Tipp 2"],
+  "variationen": {{
+    "pueriert": "Anleitung für pürierte Kost",
+    "leichteKost": "Anpassung für leichte Vollkost"
+  }}
+}}
+
+Gib das komplette Rezept mit allen Details zurück!"""
+    
+    # API-Call
+    rezept_data, error = rufe_claude_api(prompt, api_key, max_tokens=4000)
+    
+    if error:
+        return None, error
+    
+    if not rezept_data:
+        return None, "Keine Daten erhalten"
+    
+    # Validiere dass es ein Rezept-Objekt ist
+    if not isinstance(rezept_data, dict):
+        return None, f"Ungültige Antwort-Struktur: {type(rezept_data)}"
+    
+    # Stelle sicher dass wichtige Felder vorhanden sind
+    if 'name' not in rezept_data:
+        rezept_data['name'] = f"{gericht_info['gericht']} mit {beilagen_text}"
+    if 'woche' not in rezept_data:
+        rezept_data['woche'] = gericht_info['woche']
+    if 'tag' not in rezept_data:
+        rezept_data['tag'] = gericht_info['tag']
+    if 'menu' not in rezept_data:
+        rezept_data['menu'] = gericht_info['menu']
+    
+    return rezept_data, None
+
+
+def generiere_rezepte_einzeln(speiseplan, api_key, produktliste=None, produktlisten_prozent=0):
+    """
+    Generiert Rezepte einzeln nacheinander (robuster!)
+    
+    Returns:
+        (rezepte_dict, error)
+    """
+    # Sammle alle Gerichte
+    alle_gerichte = []
+    for woche in speiseplan['speiseplan']['wochen']:
+        for tag in woche['tage']:
+            for menu in tag['menues']:
+                if 'mittagessen' in menu:
+                    beilagen = menu['mittagessen'].get('beilagen', [])
+                    alle_gerichte.append({
+                        'gericht': menu['mittagessen']['hauptgericht'],
+                        'beilagen': beilagen,
+                        'woche': woche['woche'],
+                        'tag': tag['tag'],
+                        'menu': menu['menuName']
+                    })
+    
+    # Dedupliziere
+    unique_gerichte = {}
+    for g in alle_gerichte:
+        key = (g['gericht'], tuple(sorted(g['beilagen'])))
+        if key not in unique_gerichte:
+            unique_gerichte[key] = g
+    
+    alle_gerichte = list(unique_gerichte.values())
+    anzahl = len(alle_gerichte)
+    
+    # Info-Anzeige
+    st.info(f"📖 Generiere {anzahl} Rezepte einzeln nacheinander...")
+    if produktliste and produktlisten_prozent > 0:
+        st.info(f"📦 Berücksichtige {len(produktliste)} Produkte ({produktlisten_prozent}%)")
+    
+    # Progress Bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # Sammle generierte Rezepte
+    erfolgreiche_rezepte = []
+    fehlgeschlagene = []
+    
+    # Generiere jedes Rezept einzeln
+    for i, gericht in enumerate(alle_gerichte, 1):
+        # Update Progress
+        progress = i / anzahl
+        progress_bar.progress(progress)
+        beilagen_text = ', '.join(gericht['beilagen']) if gericht['beilagen'] else "ohne Beilagen"
+        status_text.text(f"📖 Rezept {i}/{anzahl}: {gericht['gericht']} mit {beilagen_text}")
+        
+        # Generiere Rezept
+        rezept, error = generiere_einzelnes_rezept(
+            gericht, 
+            produktliste, 
+            produktlisten_prozent,
+            api_key
+        )
+        
+        if error:
+            fehlgeschlagene.append({
+                'gericht': gericht['gericht'],
+                'fehler': error
+            })
+            st.warning(f"⚠️ Rezept {i} fehlgeschlagen: {gericht['gericht']} - {error}")
+        else:
+            erfolgreiche_rezepte.append(rezept)
+            st.success(f"✅ Rezept {i}/{anzahl} erfolgreich: {gericht['gericht']}")
+        
+        # Kurze Pause zwischen Anfragen (Rate Limiting vermeiden)
+        if i < anzahl:
+            import time
+            time.sleep(0.5)
+    
+    # Fertig
+    progress_bar.progress(1.0)
+    status_text.empty()
+    
+    # Ergebnis
+    if not erfolgreiche_rezepte:
+        return None, f"Alle {anzahl} Rezepte fehlgeschlagen!"
+    
+    if fehlgeschlagene:
+        st.warning(f"⚠️ {len(fehlgeschlagene)} von {anzahl} Rezepten fehlgeschlagen:")
+        for f in fehlgeschlagene:
+            st.write(f"- {f['gericht']}: {f['fehler']}")
+    
+    return {'rezepte': erfolgreiche_rezepte}, None
     """
     Generiert Rezepte in Batches
     """
@@ -250,23 +463,48 @@ def generiere_rezepte_batch(speiseplan, api_key, produktliste=None, produktliste
         if produktliste and produktlisten_prozent > 0:
             progress_callback(f"Verwende Produktliste mit {len(produktliste)} Artikeln ({produktlisten_prozent}%)")
     
-    # Verwende optimierte Rezept-Prompt-Funktion mit Produktliste
-    prompt = get_rezepte_prompt(speiseplan, produktliste, produktlisten_prozent)
+    # WICHTIG: Bei langen Produktlisten, limitiere für Rezepte auf 100
+    rezept_produktliste = produktliste
+    if produktliste and len(produktliste) > 100:
+        if progress_callback:
+            progress_callback(f"⚠️ Produktliste sehr lang ({len(produktliste)} Artikel) - verwende Top 100 für Rezepte")
+        rezept_produktliste = produktliste[:100]
     
-    # Debug: Zeige Prompt-Länge
+    # Verwende optimierte Rezept-Prompt-Funktion mit limitierter Produktliste
+    prompt = get_rezepte_prompt(speiseplan, rezept_produktliste, produktlisten_prozent)
+    
+    # Debug: Zeige Prompt-Statistiken
     if progress_callback:
-        progress_callback(f"Prompt-Länge: {len(prompt)} Zeichen")
+        progress_callback(f"Prompt: {len(prompt)} Zeichen (~{len(prompt)//4} Tokens)")
     
-    rezepte_data, error = rufe_claude_api(prompt, api_key, max_tokens=10000)
+    st.session_state['last_rezept_prompt_length'] = len(prompt)
+    
+    # Erhöhe max_tokens für Rezepte (sind länger als Speisepläne)
+    rezepte_data, error = rufe_claude_api(prompt, api_key, max_tokens=16000)
     
     if error:
+        st.session_state['last_rezept_error'] = {
+            'error': str(error),
+            'prompt_length': len(prompt),
+            'produktliste_size': len(produktliste) if produktliste else 0
+        }
         return None, error
     
     # Validiere Struktur
     if not rezepte_data:
-        return None, "Keine Daten von API erhalten"
+        st.session_state['last_rezept_error'] = {
+            'error': 'Keine Daten empfangen',
+            'response_was_none': True,
+            'prompt_length': len(prompt)
+        }
+        return None, "Keine Daten von API erhalten. Bitte öffnen Sie den Debug-Bereich unten für Details."
     
     if not isinstance(rezepte_data, dict):
+        st.session_state['last_rezept_error'] = {
+            'error': 'Falscher Datentyp',
+            'type': str(type(rezepte_data)),
+            'data_preview': str(rezepte_data)[:500]
+        }
         return None, f"API gab kein Dictionary zurück, sondern: {type(rezepte_data)}"
     
     # Debug: Speichere in Session State für Analyse
@@ -872,28 +1110,29 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
                 produktliste = st.session_state.get('produktliste')
                 produktlisten_prozent = st.session_state.get('produktlisten_prozent', 0)
                 
-                with st.spinner("📖 Generiere Rezepte..."):
-                    rezepte_data, error = generiere_rezepte_batch(
-                        st.session_state['speiseplan'],
-                        api_key,
-                        produktliste,
-                        produktlisten_prozent
-                    )
-                    
-                    if error:
-                        st.error(f"❌ Fehler: {error}")
-                    elif not rezepte_data:
-                        st.error("❌ Keine Rezepte-Daten erhalten")
-                    elif 'rezepte' not in rezepte_data:
-                        st.error(f"❌ Ungültige Rezepte-Struktur. Erhaltene Keys: {list(rezepte_data.keys()) if isinstance(rezepte_data, dict) else 'Kein Dict'}")
-                        st.session_state['last_invalid_rezepte'] = rezepte_data
-                        with st.expander("🔍 Erhaltene Daten"):
-                            st.json(rezepte_data)
-                    else:
-                        st.session_state['rezepte'] = rezepte_data
-                        anzahl = len(rezepte_data['rezepte']) if isinstance(rezepte_data.get('rezepte'), list) else 0
-                        st.success(f"✅ {anzahl} Rezepte erstellt!")
-                        st.rerun()
+                # Verwende neue einzelne Generierung (robuster!)
+                rezepte_data, error = generiere_rezepte_einzeln(
+                    st.session_state['speiseplan'],
+                    api_key,
+                    produktliste,
+                    produktlisten_prozent
+                )
+                
+                if error:
+                    st.error(f"❌ Fehler: {error}")
+                elif not rezepte_data:
+                    st.error("❌ Keine Rezepte-Daten erhalten")
+                elif 'rezepte' not in rezepte_data:
+                    st.error(f"❌ Ungültige Rezepte-Struktur. Erhaltene Keys: {list(rezepte_data.keys()) if isinstance(rezepte_data, dict) else 'Kein Dict'}")
+                    st.session_state['last_invalid_rezepte'] = rezepte_data
+                    with st.expander("🔍 Erhaltene Daten"):
+                        st.json(rezepte_data)
+                else:
+                    st.session_state['rezepte'] = rezepte_data
+                    anzahl = len(rezepte_data['rezepte']) if isinstance(rezepte_data.get('rezepte'), list) else 0
+                    st.success(f"🎉 {anzahl} Rezepte erfolgreich erstellt!")
+                    st.balloons()
+                    st.rerun()
 
 # ===================== DEBUG-BEREICH =====================
 st.divider()
@@ -902,6 +1141,33 @@ with st.expander("🔧 Debug-Informationen (bei Problemen öffnen)"):
     st.write(f"**Speiseplan vorhanden:** {'speiseplan' in st.session_state}")
     st.write(f"**Rezepte vorhanden:** {'rezepte' in st.session_state}")
     st.write(f"**Prüfung vorhanden:** {'pruefung' in st.session_state}")
+    
+    # Rezept-spezifische Fehler
+    if 'last_rezept_error' in st.session_state:
+        st.markdown("### ❌ Letzter Rezept-Fehler")
+        fehler = st.session_state['last_rezept_error']
+        st.json(fehler)
+        
+        if 'prompt_length' in fehler:
+            tokens_ca = fehler['prompt_length'] // 4
+            st.warning(f"⚠️ Prompt-Länge: {fehler['prompt_length']:,} Zeichen (~{tokens_ca:,} Tokens)")
+            if tokens_ca > 15000:
+                st.error("🚨 Prompt ist sehr lang! Das könnte das Problem sein.")
+    
+    # Rezept-Prompt-Statistiken
+    if 'last_rezept_prompt_length' in st.session_state:
+        st.markdown("### 📊 Rezept-Prompt-Statistiken")
+        length = st.session_state['last_rezept_prompt_length']
+        tokens = length // 4
+        st.write(f"**Länge:** {length:,} Zeichen")
+        st.write(f"**~Tokens:** {tokens:,}")
+        
+        if tokens > 15000:
+            st.error("⚠️ Prompt ist zu lang für die API!")
+        elif tokens > 10000:
+            st.warning("⚠️ Prompt ist sehr lang, könnte problematisch sein")
+        else:
+            st.success("✅ Prompt-Länge ist OK")
     
     if 'last_rezepte_raw' in st.session_state:
         st.markdown("### 📦 Letzte Rezepte-Raw-Daten")
