@@ -111,8 +111,6 @@ def rufe_claude_api(prompt, api_key, max_tokens=16000, max_retries=3):
     
     # Nach erfolgreicher Response oder Fehler
     try:
-    # Nach erfolgreicher Response oder Fehler
-    try:
         data = response.json()
         
         # Debug: Zeige Antwort-Struktur in Session State
