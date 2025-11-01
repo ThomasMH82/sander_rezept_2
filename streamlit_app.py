@@ -4,6 +4,7 @@ import json
 import re
 from datetime import datetime
 from io import BytesIO
+import pandas as pd
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
@@ -154,14 +155,17 @@ def bereinigeJSON(text):
 
 # ===================== SPEISEPLAN-GENERIERUNG =====================
 
-def generiere_speiseplan(wochen, menulinien, menu_namen, api_key):
+def generiere_speiseplan(wochen, menulinien, menu_namen, api_key, produktliste=None, produktlisten_prozent=0):
     """
     Generiert den kompletten Speiseplan mit den OPTIMIERTEN Prompts
     """
     st.info("🔄 Starte Speiseplan-Generierung mit optimierten Prompts...")
     
+    if produktliste and produktlisten_prozent > 0:
+        st.info(f"📦 Berücksichtige {len(produktliste)} Produkte ({produktlisten_prozent}% Verwendung)")
+    
     # Verwende die optimierte Prompt-Funktion aus prompts.py
-    prompt = get_speiseplan_prompt(wochen, menulinien, menu_namen)
+    prompt = get_speiseplan_prompt(wochen, menulinien, menu_namen, produktliste, produktlisten_prozent)
     
     # Debug: Zeige einen Teil des Prompts
     with st.expander("🔍 Verwendeter Prompt (erste 1000 Zeichen)"):
@@ -179,7 +183,7 @@ def generiere_speiseplan(wochen, menulinien, menu_namen, api_key):
     return speiseplan, None
 
 
-def generiere_rezepte_batch(speiseplan, api_key, batch_size=7, progress_callback=None):
+def generiere_rezepte_batch(speiseplan, api_key, produktliste=None, produktlisten_prozent=0, batch_size=7, progress_callback=None):
     """
     Generiert Rezepte in Batches
     """
@@ -209,9 +213,11 @@ def generiere_rezepte_batch(speiseplan, api_key, batch_size=7, progress_callback
     
     if progress_callback:
         progress_callback(f"Starte Rezept-Generierung für {len(alle_gerichte)} Gerichte")
+        if produktliste and produktlisten_prozent > 0:
+            progress_callback(f"Verwende Produktliste mit {len(produktliste)} Artikeln ({produktlisten_prozent}%)")
     
-    # Verwende optimierte Rezept-Prompt-Funktion
-    prompt = get_rezepte_prompt(speiseplan)
+    # Verwende optimierte Rezept-Prompt-Funktion mit Produktliste
+    prompt = get_rezepte_prompt(speiseplan, produktliste, produktlisten_prozent)
     
     # Debug: Zeige Prompt-Länge
     if progress_callback:
@@ -499,6 +505,126 @@ with st.sidebar:
     for i in range(menulinien):
         name = st.text_input(f"Menülinie {i+1}", value=f"Menü {i+1}", key=f"menu_{i}")
         menu_namen.append(name)
+    
+    st.divider()
+    
+    st.header("📦 Produktliste (optional)")
+    st.caption("Laden Sie Ihre verfügbaren Produkte hoch, um die Rezepte darauf abzustimmen")
+    
+    # File Upload
+    uploaded_file = st.file_uploader(
+        "Produktliste hochladen",
+        type=['txt', 'xlsx', 'xls', 'csv'],
+        help="TXT (ein Produkt pro Zeile), Excel oder CSV mit Produktnamen"
+    )
+    
+    produktliste = None
+    if uploaded_file is not None:
+        try:
+            # Parse je nach Dateityp
+            if uploaded_file.name.endswith('.txt'):
+                # TXT-Datei: eine Zeile pro Produkt
+                content = uploaded_file.read().decode('utf-8')
+                produktliste = [line.strip() for line in content.split('\n') if line.strip()]
+            
+            elif uploaded_file.name.endswith(('.xlsx', '.xls')):
+                # Excel-Datei - intelligente Verarbeitung für ERP-Exporte
+                df = pd.read_excel(uploaded_file)
+                
+                # Sammle alle Produktnamen aus verschiedenen Quellen
+                produktliste = []
+                
+                # 1. Spaltenname als Produkt (typisch bei ERP-Exporten)
+                if len(df.columns) > 0:
+                    # Erste Spalte Header kann ein Produkt sein
+                    header_name = str(df.columns[0]).strip()
+                    if header_name and header_name.lower() not in ['produktname', 'artikel', 'name', 'produkt', 'bezeichnung', 'unnamed']:
+                        produktliste.append(header_name)
+                
+                # 2. Alle Werte aus der ersten Spalte
+                if len(df.columns) > 0:
+                    erste_spalte = df.iloc[:, 0].dropna().astype(str).tolist()
+                    produktliste.extend([p.strip() for p in erste_spalte if p.strip()])
+                
+                # 3. Falls mehrere Spalten: prüfe ob eine "Produktname" heißt
+                for col in df.columns:
+                    col_lower = str(col).lower()
+                    if col_lower in ['produktname', 'artikel', 'artikelname', 'bezeichnung', 'name']:
+                        produkte_aus_spalte = df[col].dropna().astype(str).tolist()
+                        produktliste.extend([p.strip() for p in produkte_aus_spalte if p.strip()])
+                        break
+                
+                # Dedupliziere
+                produktliste = list(dict.fromkeys(produktliste))  # Behält Reihenfolge
+            
+            elif uploaded_file.name.endswith('.csv'):
+                # CSV-Datei - ähnliche Logik wie Excel
+                df = pd.read_csv(uploaded_file)
+                
+                produktliste = []
+                
+                # Header könnte Produkt sein
+                if len(df.columns) > 0:
+                    header_name = str(df.columns[0]).strip()
+                    if header_name and header_name.lower() not in ['produktname', 'artikel', 'name', 'produkt', 'bezeichnung', 'unnamed']:
+                        produktliste.append(header_name)
+                
+                # Erste Spalte
+                if len(df.columns) > 0:
+                    erste_spalte = df.iloc[:, 0].dropna().astype(str).tolist()
+                    produktliste.extend([p.strip() for p in erste_spalte if p.strip()])
+                
+                # Dedupliziere
+                produktliste = list(dict.fromkeys(produktliste))
+            
+            if produktliste:
+                st.success(f"✅ {len(produktliste)} Produkte geladen!")
+                with st.expander("📋 Produktliste anzeigen (erste 50)"):
+                    for i, produkt in enumerate(produktliste[:50], 1):
+                        st.write(f"{i}. {produkt}")
+                    if len(produktliste) > 50:
+                        st.caption(f"... und {len(produktliste) - 50} weitere Produkte")
+        except Exception as e:
+            st.error(f"❌ Fehler beim Laden der Datei: {e}")
+            with st.expander("🔍 Debug-Info"):
+                st.code(f"Fehler: {str(e)}\nDateiname: {uploaded_file.name}")
+            produktliste = None
+    
+    # Schieberegler für Produktlisten-Verwendung
+    if produktliste:
+        st.subheader("🎯 Produktlisten-Verwendung")
+        produktlisten_prozent = st.slider(
+            "Wie viel % der Zutaten sollen aus der Liste stammen?",
+            min_value=0,
+            max_value=100,
+            value=80,
+            step=5,
+            help=(
+                "100% = Nur Produkte aus der Liste\n"
+                "80% = Hauptsächlich aus Liste, Rest flexibel\n"
+                "50% = Halb/halb\n"
+                "0% = Liste nur als Empfehlung"
+            )
+        )
+        
+        # Erklärung basierend auf Wert
+        if produktlisten_prozent == 100:
+            st.info("🔒 **Strikt:** Nur Produkte aus Ihrer Liste werden verwendet")
+        elif produktlisten_prozent >= 80:
+            st.info("✅ **Bevorzugt:** Hauptsächlich Ihre Produkte, gelegentlich Alternativen")
+        elif produktlisten_prozent >= 50:
+            st.info("⚖️ **Ausgewogen:** Mix aus Ihren Produkten und Standardzutaten")
+        elif produktlisten_prozent >= 20:
+            st.info("💡 **Flexibel:** Liste als Empfehlung, freie Rezeptgestaltung")
+        else:
+            st.info("🆓 **Frei:** Liste wird kaum berücksichtigt")
+    else:
+        produktlisten_prozent = 0
+        st.info("💡 Laden Sie eine Produktliste hoch, um Rezepte darauf abzustimmen")
+    
+    # Speichere in Session State für Verwendung in Prompts
+    st.session_state['produktliste'] = produktliste
+    st.session_state['produktlisten_prozent'] = produktlisten_prozent
 
 # Titel
 st.title("👨‍🍳 Professioneller Speiseplan-Generator")
@@ -511,8 +637,19 @@ if st.button("🚀 Speiseplan generieren", type="primary", use_container_width=T
     if not api_key:
         st.error("❌ Bitte API-Key eingeben!")
     else:
+        # Hole Produktliste aus Session State
+        produktliste = st.session_state.get('produktliste')
+        produktlisten_prozent = st.session_state.get('produktlisten_prozent', 0)
+        
         with st.spinner("⏳ Generiere Speiseplan..."):
-            speiseplan_data, error = generiere_speiseplan(wochen, menulinien, menu_namen, api_key)
+            speiseplan_data, error = generiere_speiseplan(
+                wochen, 
+                menulinien, 
+                menu_namen, 
+                api_key,
+                produktliste,
+                produktlisten_prozent
+            )
             
             if error:
                 st.error(f"❌ Fehler: {error}")
@@ -674,10 +811,16 @@ if 'speiseplan' in st.session_state and st.session_state['speiseplan']:
             st.info("💡 Rezepte noch nicht generiert. Klicken Sie auf den Button um sie zu erstellen.")
             
             if st.button("📖 Rezepte jetzt generieren", type="primary", use_container_width=True):
+                # Hole Produktliste aus Session State
+                produktliste = st.session_state.get('produktliste')
+                produktlisten_prozent = st.session_state.get('produktlisten_prozent', 0)
+                
                 with st.spinner("📖 Generiere Rezepte..."):
                     rezepte_data, error = generiere_rezepte_batch(
                         st.session_state['speiseplan'],
-                        api_key
+                        api_key,
+                        produktliste,
+                        produktlisten_prozent
                     )
                     
                     if error:
