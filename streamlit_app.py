@@ -17,6 +17,14 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 # WICHTIG: Importiere die optimierten Prompts!
 from prompts import get_speiseplan_prompt, get_rezepte_prompt, get_pruefung_prompt, TOOL_DIRECTIVE
 
+# Import für Menü-Analyse
+from menu_analyzer import (
+    extrahiere_text_aus_pdf,
+    extrahiere_text_aus_url,
+    analysiere_speiseplan_text,
+    formatiere_analyse_ergebnis
+)
+
 st.set_page_config(page_title="Speiseplan-Generator", layout="wide", page_icon="👨‍🍳")
 
 # ===================== KONFIGURATION =====================
@@ -902,6 +910,141 @@ with st.sidebar:
 st.title("👨‍🍳 Professioneller Speiseplan-Generator")
 st.markdown("*Für Gemeinschaftsverpflegung, Krankenhäuser & Senioreneinrichtungen*")
 st.markdown("**✨ Mit optimierten Prompts für maximale Abwechslung!**")
+st.divider()
+
+# ===================== MENÜ-ANALYSE BEREICH =====================
+st.header("📤 Speiseplan aus PDF/Webseite analysieren")
+st.markdown("**Lade ein PDF hoch oder gib eine URL ein, um vorhandene Speisepläne zu analysieren**")
+
+# Tabs für Upload-Optionen
+upload_tab1, upload_tab2 = st.tabs(["📄 PDF hochladen", "🌐 Webseite analysieren"])
+
+with upload_tab1:
+    st.markdown("### PDF-Datei hochladen")
+    st.caption("Lade eine PDF-Datei mit einem Speiseplan hoch (z.B. Restaurant-Menü, Kantine-Speiseplan)")
+
+    uploaded_pdf = st.file_uploader(
+        "PDF-Datei auswählen",
+        type=['pdf'],
+        key="pdf_uploader",
+        help="Wähle eine PDF-Datei aus, die einen Speiseplan enthält"
+    )
+
+    if uploaded_pdf is not None:
+        st.success(f"✅ Datei hochgeladen: {uploaded_pdf.name}")
+
+        if st.button("🔍 PDF analysieren", type="primary", key="analyze_pdf_btn"):
+            if not api_key:
+                st.error("❌ Bitte API-Key eingeben!")
+            else:
+                with st.spinner("⏳ Extrahiere Text aus PDF..."):
+                    text, error = extrahiere_text_aus_pdf(uploaded_pdf)
+
+                    if error:
+                        st.error(f"❌ {error}")
+                    else:
+                        st.success(f"✅ Text extrahiert ({len(text)} Zeichen)")
+
+                        # Zeige einen Ausschnitt des extrahierten Textes
+                        with st.expander("📝 Extrahierter Text (Vorschau)"):
+                            st.text(text[:1000] + "..." if len(text) > 1000 else text)
+
+                        # Analysiere mit Claude
+                        with st.spinner("🤖 Analysiere Speiseplan mit KI..."):
+                            analyse_result, error = analysiere_speiseplan_text(
+                                text,
+                                api_key,
+                                rufe_claude_api
+                            )
+
+                            if error:
+                                st.error(f"❌ Analyse fehlgeschlagen: {error}")
+                            else:
+                                st.success("✅ Analyse abgeschlossen!")
+
+                                # Formatiere und zeige Ergebnis
+                                formatted_text = formatiere_analyse_ergebnis(analyse_result)
+
+                                st.markdown("### 📊 Analyse-Ergebnis")
+                                st.text(formatted_text)
+
+                                # Download-Button für Ergebnis
+                                st.download_button(
+                                    label="💾 Analyse als Textdatei herunterladen",
+                                    data=formatted_text,
+                                    file_name=f"Speiseplan_Analyse_{uploaded_pdf.name}.txt",
+                                    mime="text/plain"
+                                )
+
+                                # Zeige auch das rohe JSON
+                                with st.expander("🔍 Rohdaten (JSON)"):
+                                    st.json(analyse_result)
+
+with upload_tab2:
+    st.markdown("### Webseite analysieren")
+    st.caption("Gib die URL einer Webseite ein, die einen Speiseplan enthält (z.B. Restaurant-Website, Kantine)")
+
+    url_input = st.text_input(
+        "URL eingeben",
+        placeholder="https://beispiel-restaurant.de/speiseplan",
+        key="url_input",
+        help="Vollständige URL zur Webseite mit dem Speiseplan"
+    )
+
+    if url_input:
+        if st.button("🔍 Webseite analysieren", type="primary", key="analyze_url_btn"):
+            if not api_key:
+                st.error("❌ Bitte API-Key eingeben!")
+            else:
+                with st.spinner(f"⏳ Lade Webseite von {url_input}..."):
+                    text, error = extrahiere_text_aus_url(url_input)
+
+                    if error:
+                        st.error(f"❌ {error}")
+                    else:
+                        st.success(f"✅ Webseite geladen ({len(text)} Zeichen)")
+
+                        # Zeige einen Ausschnitt des extrahierten Textes
+                        with st.expander("📝 Extrahierter Text (Vorschau)"):
+                            st.text(text[:1000] + "..." if len(text) > 1000 else text)
+
+                        # Analysiere mit Claude
+                        with st.spinner("🤖 Analysiere Speiseplan mit KI..."):
+                            analyse_result, error = analysiere_speiseplan_text(
+                                text,
+                                api_key,
+                                rufe_claude_api
+                            )
+
+                            if error:
+                                st.error(f"❌ Analyse fehlgeschlagen: {error}")
+                            else:
+                                st.success("✅ Analyse abgeschlossen!")
+
+                                # Formatiere und zeige Ergebnis
+                                formatted_text = formatiere_analyse_ergebnis(analyse_result)
+
+                                st.markdown("### 📊 Analyse-Ergebnis")
+                                st.text(formatted_text)
+
+                                # Download-Button für Ergebnis
+                                st.download_button(
+                                    label="💾 Analyse als Textdatei herunterladen",
+                                    data=formatted_text,
+                                    file_name="Speiseplan_Analyse_Webseite.txt",
+                                    mime="text/plain"
+                                )
+
+                                # Zeige auch das rohe JSON
+                                with st.expander("🔍 Rohdaten (JSON)"):
+                                    st.json(analyse_result)
+
+st.divider()
+st.markdown("---")
+
+# ===================== STANDARD SPEISEPLAN-GENERIERUNG =====================
+st.header("🎨 Oder: Neuen Speiseplan generieren")
+st.markdown("**Erstelle einen komplett neuen Speiseplan basierend auf deinen Vorgaben**")
 st.divider()
 
 # Generierungs-Button
