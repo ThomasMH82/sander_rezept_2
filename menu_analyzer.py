@@ -99,6 +99,9 @@ def analysiere_speiseplan_text(text, api_key, rufe_claude_api_func):
     """
     Analysiert einen Text mit Claude API und extrahiert Speiseplan-Informationen
 
+    Verwendet den professionellen Analyse-Prompt aus prompts.py, der einen
+    diätischen Küchenmeister mit 25 Jahren Erfahrung simuliert.
+
     Args:
         text: Der zu analysierende Text
         api_key: API-Schlüssel für Claude
@@ -107,63 +110,14 @@ def analysiere_speiseplan_text(text, api_key, rufe_claude_api_func):
     Returns:
         dict: Analyseergebnisse oder Fehlermeldung
     """
+    # Importiere den professionellen Analyse-Prompt
+    from prompts import get_analyse_prompt
 
-    # Kürze Text wenn zu lang (max ca. 15000 Zeichen für den Prompt)
-    max_text_length = 12000
-    if len(text) > max_text_length:
-        text = text[:max_text_length] + "\n\n[Text gekürzt...]"
+    # Erstelle den Prompt mit der optimierten Funktion
+    prompt = get_analyse_prompt(text)
 
-    prompt = f"""Du bist ein Experte für die Analyse von Speiseplänen.
-
-Analysiere den folgenden Text und extrahiere alle Informationen über Speisepläne, Menüs, Gerichte und Mahlzeiten.
-
-TEXT:
-{text}
-
-AUFGABE:
-1. Identifiziere alle Gerichte, Menüs und Speisepläne im Text
-2. Extrahiere Informationen über:
-   - Wochentage/Datum
-   - Menübezeichnungen (z.B. Menü 1, Menü 2, vegetarisch, etc.)
-   - Hauptgerichte
-   - Beilagen
-   - Desserts oder Vorspeisen (falls vorhanden)
-   - Nährwerte (falls vorhanden)
-   - Allergene (falls vorhanden)
-   - Preise (falls vorhanden)
-
-3. Strukturiere die Informationen übersichtlich
-
-4. Gib eine textuelle Zusammenfassung der gefundenen Speisepläne aus
-
-Antworte in folgendem JSON-Format:
-{{
-  "gefunden": true/false,
-  "anzahl_tage": Anzahl der gefundenen Tage,
-  "anzahl_gerichte": Anzahl der gefundenen Gerichte,
-  "struktur": "Beschreibung der Speiseplan-Struktur",
-  "speiseplan": [
-    {{
-      "tag": "Tag/Datum",
-      "menues": [
-        {{
-          "name": "Menü-Bezeichnung",
-          "hauptgericht": "Gericht",
-          "beilagen": ["Beilage 1", "Beilage 2"],
-          "zusatzinfo": "Weitere Infos falls vorhanden"
-        }}
-      ]
-    }}
-  ],
-  "zusammenfassung": "Detaillierte textuelle Beschreibung der gefundenen Speisepläne",
-  "besonderheiten": ["Besonderheit 1", "Besonderheit 2"],
-  "hinweise": "Wichtige Hinweise zur Qualität der Extraktion"
-}}
-
-Sei gründlich und extrahiere alle verfügbaren Informationen!"""
-
-    # Rufe Claude API auf
-    result, error = rufe_claude_api_func(prompt, api_key, max_tokens=4000)
+    # Rufe Claude API auf mit erhöhtem max_tokens für detaillierte Analyse
+    result, error = rufe_claude_api_func(prompt, api_key, max_tokens=6000)
 
     if error:
         return None, error
@@ -191,13 +145,14 @@ def formatiere_analyse_ergebnis(analyse_data):
 
     # Header
     text_parts.append("=" * 80)
-    text_parts.append("SPEISEPLAN-ANALYSE ERGEBNIS")
+    text_parts.append("PROFESSIONELLE SPEISEPLAN-ANALYSE")
+    text_parts.append("Erstellt von einem diätischen Küchenmeister")
     text_parts.append("=" * 80)
     text_parts.append("")
 
     # Übersicht
     if analyse_data.get('gefunden'):
-        text_parts.append(f"✅ Speiseplan gefunden!")
+        text_parts.append(f"✅ Speiseplan erfolgreich analysiert!")
         text_parts.append(f"   Anzahl Tage: {analyse_data.get('anzahl_tage', 'N/A')}")
         text_parts.append(f"   Anzahl Gerichte: {analyse_data.get('anzahl_gerichte', 'N/A')}")
         text_parts.append(f"   Struktur: {analyse_data.get('struktur', 'N/A')}")
@@ -212,6 +167,37 @@ def formatiere_analyse_ergebnis(analyse_data):
         text_parts.append("ZUSAMMENFASSUNG:")
         text_parts.append("")
         text_parts.append(analyse_data['zusammenfassung'])
+        text_parts.append("")
+        text_parts.append("-" * 80)
+
+    # FACHLICHE BEWERTUNG (NEU!)
+    if analyse_data.get('fachliche_bewertung'):
+        text_parts.append("FACHLICHE BEWERTUNG:")
+        text_parts.append("")
+        bewertung = analyse_data['fachliche_bewertung']
+
+        if bewertung.get('gesamtnote'):
+            text_parts.append(f"  Gesamtnote: {bewertung['gesamtnote'].upper()}")
+            text_parts.append("")
+
+        if bewertung.get('abwechslung'):
+            text_parts.append(f"  • Abwechslung: {bewertung['abwechslung']}")
+        if bewertung.get('ausgewogenheit'):
+            text_parts.append(f"  • Ausgewogenheit: {bewertung['ausgewogenheit']}")
+        if bewertung.get('seniorengerechtigkeit'):
+            text_parts.append(f"  • Seniorengerechtigkeit: {bewertung['seniorengerechtigkeit']}")
+        if bewertung.get('saisonalitaet'):
+            text_parts.append(f"  • Saisonalität: {bewertung['saisonalitaet']}")
+
+        text_parts.append("")
+        text_parts.append("-" * 80)
+
+    # EMPFEHLUNGEN FÜR KÜCHENMEISTER (NEU!)
+    if analyse_data.get('empfehlungen_fuer_kuechenmeister'):
+        text_parts.append("ANWEISUNGEN FÜR DIE KÜCHE:")
+        text_parts.append("")
+        for i, empfehlung in enumerate(analyse_data['empfehlungen_fuer_kuechenmeister'], 1):
+            text_parts.append(f"  {i}. {empfehlung}")
         text_parts.append("")
         text_parts.append("-" * 80)
 
@@ -238,6 +224,17 @@ def formatiere_analyse_ergebnis(analyse_data):
                 text_parts.append("")
 
             text_parts.append("-" * 80)
+
+    # VERBESSERUNGSVORSCHLÄGE
+    if analyse_data.get('verbesserungsvorschlaege'):
+        text_parts.append("VERBESSERUNGSVORSCHLÄGE:")
+        text_parts.append("")
+        for vorschlag in analyse_data['verbesserungsvorschlaege']:
+            text_parts.append(f"  Bereich: {vorschlag.get('bereich', 'N/A')}")
+            text_parts.append(f"  Problem: {vorschlag.get('problem', 'N/A')}")
+            text_parts.append(f"  Empfehlung: {vorschlag.get('empfehlung', 'N/A')}")
+            text_parts.append("")
+        text_parts.append("-" * 80)
 
     # Besonderheiten
     if analyse_data.get('besonderheiten'):

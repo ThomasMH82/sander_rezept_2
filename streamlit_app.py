@@ -15,7 +15,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 # WICHTIG: Importiere die optimierten Prompts!
-from prompts import get_speiseplan_prompt, get_rezepte_prompt, get_pruefung_prompt, TOOL_DIRECTIVE
+from prompts import get_speiseplan_prompt, get_rezepte_prompt, get_pruefung_prompt, get_analyse_prompt, TOOL_DIRECTIVE
 
 # Import für Menü-Analyse
 from menu_analyzer import (
