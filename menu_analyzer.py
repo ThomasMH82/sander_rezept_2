@@ -95,7 +95,7 @@ def extrahiere_text_aus_url(url):
         return None, f"Unerwarteter Fehler: {str(e)}"
 
 
-def analysiere_speiseplan_text(text, api_key, rufe_claude_api_func):
+def analysiere_speiseplan_text(text, api_key, rufe_claude_api_func, tool_directive):
     """
     Analysiert einen Text mit Claude API und extrahiert Speiseplan-Informationen
 
@@ -103,6 +103,7 @@ def analysiere_speiseplan_text(text, api_key, rufe_claude_api_func):
         text: Der zu analysierende Text
         api_key: API-Schlüssel für Claude
         rufe_claude_api_func: Die rufe_claude_api Funktion aus streamlit_app.py
+        tool_directive: TOOL_DIRECTIVE aus prompts.py
 
     Returns:
         dict: Analyseergebnisse oder Fehlermeldung
@@ -113,7 +114,7 @@ def analysiere_speiseplan_text(text, api_key, rufe_claude_api_func):
     if len(text) > max_text_length:
         text = text[:max_text_length] + "\n\n[Text gekürzt...]"
 
-    prompt = f"""Du bist ein Experte für die Analyse von Speiseplänen.
+    prompt = f"""Du bist ein Experte für die Analyse von Speiseplänen. {tool_directive}
 
 Analysiere den folgenden Text und extrahiere alle Informationen über Speisepläne, Menüs, Gerichte und Mahlzeiten.
 
@@ -136,31 +137,32 @@ AUFGABE:
 
 4. Gib eine textuelle Zusammenfassung der gefundenen Speisepläne aus
 
-Antworte in folgendem JSON-Format:
+WICHTIG: Gib deine Antwort als strukturiertes JSON-Objekt zurück:
+
 {{
-  "gefunden": true/false,
-  "anzahl_tage": Anzahl der gefundenen Tage,
-  "anzahl_gerichte": Anzahl der gefundenen Gerichte,
-  "struktur": "Beschreibung der Speiseplan-Struktur",
+  "gefunden": true,
+  "anzahl_tage": 5,
+  "anzahl_gerichte": 12,
+  "struktur": "Beschreibung der Struktur",
   "speiseplan": [
     {{
-      "tag": "Tag/Datum",
+      "tag": "Montag, 20.11.2025",
       "menues": [
         {{
-          "name": "Menü-Bezeichnung",
-          "hauptgericht": "Gericht",
+          "name": "Menü 1",
+          "hauptgericht": "Gericht-Name",
           "beilagen": ["Beilage 1", "Beilage 2"],
-          "zusatzinfo": "Weitere Infos falls vorhanden"
+          "zusatzinfo": "Weitere Infos"
         }}
       ]
     }}
   ],
-  "zusammenfassung": "Detaillierte textuelle Beschreibung der gefundenen Speisepläne",
+  "zusammenfassung": "Detaillierte Beschreibung ALLER gefundenen Speisepläne",
   "besonderheiten": ["Besonderheit 1", "Besonderheit 2"],
-  "hinweise": "Wichtige Hinweise zur Qualität der Extraktion"
+  "hinweise": "Qualität der Extraktion"
 }}
 
-Sei gründlich und extrahiere alle verfügbaren Informationen!"""
+Sei SEHR gründlich und extrahiere ALLE verfügbaren Informationen!"""
 
     # Rufe Claude API auf
     result, error = rufe_claude_api_func(prompt, api_key, max_tokens=4000)

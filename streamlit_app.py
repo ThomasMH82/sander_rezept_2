@@ -954,7 +954,8 @@ with upload_tab1:
                             analyse_result, error = analysiere_speiseplan_text(
                                 text,
                                 api_key,
-                                rufe_claude_api
+                                rufe_claude_api,
+                                TOOL_DIRECTIVE
                             )
 
                             if error:
@@ -1013,7 +1014,8 @@ with upload_tab2:
                             analyse_result, error = analysiere_speiseplan_text(
                                 text,
                                 api_key,
-                                rufe_claude_api
+                                rufe_claude_api,
+                                TOOL_DIRECTIVE
                             )
 
                             if error:
