@@ -2,3 +2,6 @@ streamlit
 requests
 reportlab
 openpyxl
+PyPDF2
+beautifulsoup4
+lxml
